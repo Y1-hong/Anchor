@@ -59,9 +59,6 @@ const DEFAULT_SETTINGS: HomeBaseSettings = {
 
 const DEFAULT_TODO_INBOX = `# Todo Inbox
 
-- [ ] Finish essay due:: 2026-05-28 priority:: high #school #writing
-- [ ] Review ICS 6D notes due:: 2026-05-25 priority:: medium #study
-- [ ] Buy groceries priority:: low #life
 `;
 
 const DEFAULT_WORKOUT_PLAN = `# Workout Types
@@ -386,8 +383,10 @@ class HomeBaseView extends ItemView {
       panel.createEl("p", { cls: "home-base-muted", text: "No exercises configured for this workout." });
     }
 
-    const edit = panel.createEl("button", { cls: "home-base-wide-button", text: "Edit Routine File" });
-    edit.onClickEvent(() => void this.openFile(this.plugin.settings.workoutPlanPath));
+    const edit = panel.createEl("button", { cls: "home-base-wide-button", text: "Edit Routine" });
+    edit.onClickEvent(() => {
+      new WorkoutRoutineModal(this.app, this.plugin, plan, () => void this.render()).open();
+    });
 
     const actions = panel.createDiv({ cls: "home-base-workout-actions" });
     const done = actions.createEl("button", { cls: "mod-cta home-base-primary-button", text: "Done" });
@@ -587,13 +586,6 @@ class HomeBaseView extends ItemView {
     await this.app.vault.modify(todo.file, lines.join("\n"));
   }
 
-  private async openFile(path: string) {
-    const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
-    if (!(file instanceof TFile)) return;
-    const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.openFile(file);
-  }
-
   private compareTodos(a: TodoItem, b: TodoItem) {
     const aDate = a.due || "9999-12-31";
     const bDate = b.due || "9999-12-31";
@@ -765,6 +757,219 @@ class TodoModal extends Modal {
     const priority = this.priorityValue ? ` priority:: ${this.priorityValue}` : "";
     const tagPart = tags ? ` ${tags}` : "";
     return `- [ ] ${this.titleValue.trim()}${due}${priority}${tagPart}`;
+  }
+}
+
+class WorkoutRoutineModal extends Modal {
+  private plugin: HomeBasePlugin;
+  private plan: WorkoutPlan;
+  private onSave: () => void;
+
+  constructor(app: App, plugin: HomeBasePlugin, plan: WorkoutPlan, onSave: () => void) {
+    super(app);
+    this.plugin = plugin;
+    this.plan = {
+      types: Object.fromEntries(
+        Object.entries(plan.types).map(([name, exercises]) => [name, [...exercises]])
+      ),
+      sequence: [...plan.sequence]
+    };
+    this.onSave = onSave;
+  }
+
+  onOpen() {
+    this.render();
+  }
+
+  private render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("home-base-modal", "home-base-routine-modal");
+    contentEl.createEl("h2", { text: "Edit Workout Routine" });
+
+    const typesSection = contentEl.createDiv({ cls: "home-base-routine-section" });
+    const typesHeader = typesSection.createDiv({ cls: "home-base-routine-section-header" });
+    typesHeader.createEl("h3", { text: "Workout Types" });
+    const addType = typesHeader.createEl("button", { text: "+ Add Type" });
+    addType.onClickEvent(() => {
+      const nextName = this.uniqueWorkoutName("New Workout");
+      this.plan.types[nextName] = [];
+      this.plan.sequence.push(nextName);
+      this.render();
+    });
+
+    const typeNames = Object.keys(this.plan.types);
+    if (!typeNames.length) {
+      typesSection.createEl("p", {
+        cls: "home-base-muted home-base-italic",
+        text: "Create a workout type to start your sequence."
+      });
+    }
+
+    for (const name of typeNames) {
+      this.renderWorkoutType(typesSection, name);
+    }
+
+    const sequenceSection = contentEl.createDiv({ cls: "home-base-routine-section" });
+    const sequenceHeader = sequenceSection.createDiv({ cls: "home-base-routine-section-header" });
+    sequenceHeader.createEl("h3", { text: "Sequence Order" });
+    const addSequence = sequenceHeader.createEl("button", { text: "+ Add Step" });
+    addSequence.disabled = !typeNames.length;
+    addSequence.onClickEvent(() => {
+      const firstType = Object.keys(this.plan.types)[0];
+      if (!firstType) return;
+      this.plan.sequence.push(firstType);
+      this.render();
+    });
+
+    if (!this.plan.sequence.length) {
+      sequenceSection.createEl("p", {
+        cls: "home-base-muted home-base-italic",
+        text: "No sequence steps yet."
+      });
+    }
+
+    this.plan.sequence.forEach((workout, index) => {
+      this.renderSequenceStep(sequenceSection, workout, index);
+    });
+
+    const footer = contentEl.createDiv({ cls: "home-base-modal-footer" });
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onClickEvent(() => this.close());
+    const save = footer.createEl("button", { cls: "mod-cta", text: "Save Routine" });
+    save.onClickEvent(() => void this.saveRoutine());
+  }
+
+  private renderWorkoutType(parent: HTMLElement, name: string) {
+    const card = parent.createDiv({ cls: "home-base-routine-card" });
+    const row = card.createDiv({ cls: "home-base-routine-card-row" });
+
+    const nameInput = row.createEl("input", { cls: "home-base-routine-name" });
+    nameInput.type = "text";
+    nameInput.value = name;
+    nameInput.placeholder = "Workout name";
+    nameInput.onchange = () => {
+      this.renameWorkoutType(name, nameInput.value.trim());
+    };
+
+    const remove = row.createEl("button", { text: "Delete" });
+    remove.onClickEvent(() => {
+      delete this.plan.types[name];
+      this.plan.sequence = this.plan.sequence.filter((item) => item !== name);
+      this.render();
+    });
+
+    const exercises = card.createEl("textarea", { cls: "home-base-routine-exercises" });
+    exercises.placeholder = "One exercise per line";
+    exercises.value = this.plan.types[name].join("\n");
+    exercises.onchange = () => {
+      this.plan.types[name] = exercises.value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    };
+  }
+
+  private renderSequenceStep(parent: HTMLElement, workout: string, index: number) {
+    const row = parent.createDiv({ cls: "home-base-sequence-row" });
+    row.createEl("span", { cls: "home-base-sequence-index", text: `${index + 1}` });
+
+    const select = row.createEl("select");
+    for (const typeName of Object.keys(this.plan.types)) {
+      const option = select.createEl("option", { text: typeName, value: typeName });
+      option.selected = typeName === workout;
+    }
+    select.onchange = () => {
+      this.plan.sequence[index] = select.value;
+    };
+
+    const up = row.createEl("button", { text: "Up" });
+    up.disabled = index === 0;
+    up.onClickEvent(() => {
+      this.moveSequenceStep(index, index - 1);
+      this.render();
+    });
+
+    const down = row.createEl("button", { text: "Down" });
+    down.disabled = index === this.plan.sequence.length - 1;
+    down.onClickEvent(() => {
+      this.moveSequenceStep(index, index + 1);
+      this.render();
+    });
+
+    const remove = row.createEl("button", { text: "Remove" });
+    remove.onClickEvent(() => {
+      this.plan.sequence.splice(index, 1);
+      this.render();
+    });
+  }
+
+  private renameWorkoutType(oldName: string, newName: string) {
+    if (!newName || newName === oldName) return;
+    if (this.plan.types[newName]) {
+      new Notice("A workout type with that name already exists.");
+      this.render();
+      return;
+    }
+
+    const entries = Object.entries(this.plan.types);
+    this.plan.types = Object.fromEntries(
+      entries.map(([name, exercises]) => name === oldName ? [newName, exercises] : [name, exercises])
+    );
+    this.plan.sequence = this.plan.sequence.map((item) => item === oldName ? newName : item);
+    this.render();
+  }
+
+  private moveSequenceStep(from: number, to: number) {
+    const [item] = this.plan.sequence.splice(from, 1);
+    this.plan.sequence.splice(to, 0, item);
+  }
+
+  private uniqueWorkoutName(base: string) {
+    if (!this.plan.types[base]) return base;
+    let index = 2;
+    while (this.plan.types[`${base} ${index}`]) index += 1;
+    return `${base} ${index}`;
+  }
+
+  private async saveRoutine() {
+    const typeNames = Object.keys(this.plan.types).filter(Boolean);
+    if (!typeNames.length) {
+      new Notice("Add at least one workout type.");
+      return;
+    }
+
+    this.plan.sequence = this.plan.sequence.filter((item) => Boolean(this.plan.types[item]));
+    if (!this.plan.sequence.length) {
+      this.plan.sequence = [typeNames[0]];
+    }
+
+    await this.plugin.ensureFile(this.plugin.settings.workoutPlanPath, DEFAULT_WORKOUT_PLAN);
+    const file = this.app.vault.getAbstractFileByPath(normalizePath(this.plugin.settings.workoutPlanPath));
+    if (!(file instanceof TFile)) return;
+
+    await this.app.vault.modify(file, this.formatWorkoutPlan());
+    new Notice("Workout routine saved.");
+    this.close();
+    this.onSave();
+  }
+
+  private formatWorkoutPlan() {
+    const parts = ["# Workout Types", ""];
+    for (const [name, exercises] of Object.entries(this.plan.types)) {
+      parts.push(`## ${name}`);
+      if (exercises.length) {
+        parts.push(...exercises.map((exercise) => `- ${exercise}`));
+      } else {
+        parts.push("Rest day");
+      }
+      parts.push("");
+    }
+
+    parts.push("# Sequence", "");
+    parts.push(...this.plan.sequence.map((item) => `- ${item}`));
+    parts.push("");
+    return parts.join("\n");
   }
 }
 
