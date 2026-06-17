@@ -93,11 +93,379 @@ const DEFAULT_WORKOUT_LOG = `# Workout Log
 
 `;
 
+const HOME_BASE_STYLES = `
+.home-base-view {
+  min-height: 100%;
+  padding: 32px;
+  color: var(--text-normal);
+  background:
+    radial-gradient(circle at top right, rgba(124, 97, 255, 0.12), transparent 36rem),
+    var(--background-primary);
+}
+
+.home-base-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.home-base-header h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+  letter-spacing: 0;
+}
+
+.home-base-date,
+.home-base-greeting,
+.home-base-muted {
+  color: var(--text-muted);
+}
+
+.home-base-greeting {
+  margin-top: 6px;
+}
+
+.home-base-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.home-base-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.home-base-panel {
+  padding: 20px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.14);
+}
+
+.home-base-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.home-base-panel-title h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.home-base-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  color: var(--interactive-accent);
+  font-size: 12px;
+}
+
+.home-base-pill,
+.home-base-priority {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.home-base-pill {
+  color: var(--interactive-accent);
+  background: rgba(124, 97, 255, 0.14);
+}
+
+.home-base-schedule-empty {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 18px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+}
+
+.home-base-schedule-empty p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+}
+
+.home-base-calendar-mark {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.home-base-italic {
+  font-style: italic;
+}
+
+.home-base-todo-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.home-base-primary-button,
+.home-base-secondary-button,
+.home-base-wide-button,
+.home-base-icon-button,
+.home-base-ghost-button {
+  min-height: 36px;
+  border-radius: 6px;
+}
+
+.home-base-wide-button {
+  width: 100%;
+  margin: 12px 0;
+}
+
+.home-base-icon-button {
+  padding: 0 14px;
+}
+
+.home-base-secondary-button {
+  background: var(--background-modifier-form-field);
+}
+
+.home-base-ghost-button {
+  padding: 4px 8px;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+}
+
+.home-base-todo-group {
+  margin-top: 18px;
+}
+
+.home-base-todo-group h3,
+.home-base-panel h3 {
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 15px;
+}
+
+.home-base-todo-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.home-base-todo-item.is-complete {
+  opacity: 0.58;
+}
+
+.home-base-checkbox {
+  width: 18px;
+  height: 18px;
+}
+
+.home-base-todo-name {
+  margin-bottom: 7px;
+  font-weight: 500;
+}
+
+.home-base-todo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.home-base-priority.is-high {
+  color: #ff8f7e;
+  background: rgba(199, 74, 48, 0.18);
+}
+
+.home-base-priority.is-medium {
+  color: #e7bd5b;
+  background: rgba(178, 132, 32, 0.18);
+}
+
+.home-base-priority.is-low {
+  color: #8dd277;
+  background: rgba(70, 139, 63, 0.18);
+}
+
+.home-base-tag {
+  color: var(--interactive-accent);
+}
+
+.home-base-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.home-base-unresolved {
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid rgba(226, 170, 68, 0.5);
+  border-radius: 8px;
+  color: #f0c25f;
+  background: rgba(226, 170, 68, 0.1);
+}
+
+.home-base-unresolved-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.home-base-workout-name {
+  margin: 8px 0 10px;
+  color: var(--interactive-accent);
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.home-base-exercises {
+  margin-top: 0;
+}
+
+.home-base-exercises li::marker {
+  color: var(--interactive-accent);
+}
+
+.home-base-workout-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.home-base-sequence {
+  margin-top: 18px;
+  color: var(--text-muted);
+}
+
+.home-base-modal .setting-item {
+  border-top: 0;
+}
+
+.home-base-routine-modal {
+  max-width: 780px;
+}
+
+.home-base-routine-section {
+  margin-top: 22px;
+}
+
+.home-base-routine-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.home-base-routine-section-header h3 {
+  margin: 0;
+}
+
+.home-base-routine-card {
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.home-base-routine-card-row,
+.home-base-sequence-row,
+.home-base-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.home-base-routine-name,
+.home-base-sequence-row select {
+  flex: 1;
+}
+
+.home-base-routine-exercises {
+  width: 100%;
+  min-height: 86px;
+  margin-top: 10px;
+  resize: vertical;
+}
+
+.home-base-sequence-row {
+  margin-bottom: 8px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.home-base-sequence-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
+  font-size: 12px;
+}
+
+.home-base-modal-footer {
+  justify-content: flex-end;
+  margin-top: 24px;
+}
+
+@media (max-width: 900px) {
+  .home-base-view {
+    padding: 18px;
+  }
+
+  .home-base-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .home-base-todo-item {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .home-base-actions {
+    grid-column: 2;
+  }
+
+  .home-base-routine-card-row,
+  .home-base-sequence-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+`;
+
 export default class HomeBasePlugin extends Plugin {
   settings: HomeBaseSettings;
+  private styleEl?: HTMLStyleElement;
 
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.injectStyles();
 
     this.registerView(
       VIEW_TYPE_HOME_BASE,
@@ -121,7 +489,9 @@ export default class HomeBasePlugin extends Plugin {
     });
 
     this.addSettingTab(new HomeBaseSettingTab(this.app, this));
-    await this.ensureDefaultFiles();
+    await this.ensureDefaultFiles().catch((error) => {
+      console.warn("Home Base could not create one or more default files.", error);
+    });
 
     if (this.settings.openOnStartup) {
       this.app.workspace.onLayoutReady(() => {
@@ -132,6 +502,7 @@ export default class HomeBasePlugin extends Plugin {
 
   onunload() {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_HOME_BASE);
+    this.styleEl?.remove();
   }
 
   async saveSettings() {
@@ -172,7 +543,11 @@ export default class HomeBasePlugin extends Plugin {
 
   async ensureFile(path: string, content: string) {
     const normalized = normalizePath(path);
-    if (this.app.vault.getAbstractFileByPath(normalized)) return;
+    const existing = this.app.vault.getAbstractFileByPath(normalized);
+    if (existing instanceof TFile) return;
+    if (existing) {
+      throw new Error(`Expected a file path but found a folder: ${normalized}`);
+    }
 
     const folder = normalized.split("/").slice(0, -1).join("/");
     if (folder) await this.ensureFolder(folder);
@@ -184,10 +559,22 @@ export default class HomeBasePlugin extends Plugin {
     let current = "";
     for (const part of parts) {
       current = current ? `${current}/${part}` : part;
-      if (!this.app.vault.getAbstractFileByPath(current)) {
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (existing instanceof TFile) {
+        throw new Error(`Expected a folder path but found a file: ${current}`);
+      }
+      if (!existing) {
         await this.app.vault.createFolder(current);
       }
     }
+  }
+
+  private injectStyles() {
+    this.styleEl?.remove();
+    this.styleEl = document.createElement("style");
+    this.styleEl.id = "home-base-runtime-styles";
+    this.styleEl.textContent = HOME_BASE_STYLES;
+    document.head.appendChild(this.styleEl);
   }
 }
 
