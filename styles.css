@@ -115,8 +115,15 @@
 .home-base-todo-controls {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin-bottom: 18px;
+}
+
+.home-base-quick-add {
+  flex: 1 1 260px;
+  min-width: 0;
+  min-height: 36px;
 }
 
 .home-base-primary-button,
@@ -353,6 +360,11 @@
 
   .home-base-actions {
     grid-column: 2;
+  }
+
+  .home-base-todo-controls {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .home-base-routine-card-row,

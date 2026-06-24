@@ -37,6 +37,13 @@ interface TodoItem {
   raw: string;
 }
 
+interface TodoDraft {
+  title: string;
+  due: string;
+  priority: Priority;
+  tags: string[];
+}
+
 interface WorkoutPlan {
   types: Record<string, string[]>;
   sequence: string[];
@@ -92,6 +99,103 @@ Rest day
 const DEFAULT_WORKOUT_LOG = `# Workout Log
 
 `;
+
+const QUICK_ADD_PLACEHOLDER = "Finish essay tomorrow #school !high";
+
+function parseQuickTodoInput(input: string, now = new Date()): TodoDraft | null {
+  const tokens = input.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return null;
+
+  let due = "";
+  let priority: Priority = "";
+  const tags: string[] = [];
+  const titleTokens: string[] = [];
+
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+    const priorityMatch = lower.match(/^!(high|medium|low)$/);
+    if (priorityMatch) {
+      priority = priorityMatch[1] as Priority;
+      continue;
+    }
+
+    if (/^#[\w/-]+$/.test(token)) {
+      tags.push(token);
+      continue;
+    }
+
+    const quickDue = parseQuickDueToken(lower, now);
+    if (quickDue) {
+      due = quickDue;
+      continue;
+    }
+
+    titleTokens.push(token);
+  }
+
+  const title = titleTokens.join(" ").trim();
+  if (!title) return null;
+
+  return {
+    title,
+    due,
+    priority,
+    tags: normalizeTodoTags(tags)
+  };
+}
+
+function parseQuickDueToken(token: string, now: Date) {
+  if (token === "today") return formatDateKey(now);
+  if (token === "tomorrow") return formatDateKey(addDays(now, 1));
+  if (/^\d{4}-\d{2}-\d{2}$/.test(token) && isValidDateKey(token)) return token;
+  return "";
+}
+
+function isValidDateKey(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
+function normalizeTodoTags(tags: string[]) {
+  const seen = new Set<string>();
+  return tags
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .map((tag) => tag.startsWith("#") ? tag : `#${tag}`)
+    .filter((tag) => {
+      if (seen.has(tag)) return false;
+      seen.add(tag);
+      return true;
+    });
+}
+
+function formatTodoLine(todo: TodoDraft, completed = false) {
+  const due = todo.due ? ` due:: ${todo.due}` : "";
+  const priority = todo.priority ? ` priority:: ${todo.priority}` : "";
+  const tags = todo.tags.length ? ` ${todo.tags.join(" ")}` : "";
+  return `- [${completed ? "x" : " "}] ${todo.title.trim()}${due}${priority}${tags}`;
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return startOfDay(next);
+}
+
+function formatDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
 
 const HOME_BASE_STYLES = `
 .home-base-view {
@@ -211,8 +315,15 @@ const HOME_BASE_STYLES = `
 .home-base-todo-controls {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin-bottom: 18px;
+}
+
+.home-base-quick-add {
+  flex: 1 1 260px;
+  min-width: 0;
+  min-height: 36px;
 }
 
 .home-base-primary-button,
@@ -451,6 +562,11 @@ const HOME_BASE_STYLES = `
     grid-column: 2;
   }
 
+  .home-base-todo-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .home-base-routine-card-row,
   .home-base-sequence-row {
     align-items: stretch;
@@ -673,6 +789,20 @@ class HomeBaseView extends ItemView {
     title.createEl("h2", { text: "Todo Manager" });
 
     const controls = panel.createDiv({ cls: "home-base-todo-controls" });
+    const quickAdd = controls.createEl("input", {
+      cls: "home-base-quick-add",
+      attr: {
+        "aria-label": "Quick add todo",
+        placeholder: QUICK_ADD_PLACEHOLDER
+      }
+    });
+    quickAdd.type = "text";
+    quickAdd.onkeydown = (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      void this.createQuickTodo(quickAdd);
+    };
+
     const newTodo = controls.createEl("button", { cls: "mod-cta home-base-primary-button", text: "+ New Todo" });
     newTodo.onClickEvent(() => {
       new TodoModal(this.app, this.plugin, undefined, () => void this.render()).open();
@@ -729,6 +859,20 @@ class HomeBaseView extends ItemView {
       await this.deleteTodo(todo);
       await this.render();
     });
+  }
+
+  private async createQuickTodo(input: HTMLInputElement) {
+    const todo = parseQuickTodoInput(input.value);
+    if (!todo) {
+      new Notice("Add a todo title before saving.");
+      input.focus();
+      return;
+    }
+
+    await appendTodoToInbox(this.app, this.plugin, formatTodoLine(todo));
+    input.value = "";
+    new Notice("Todo added.");
+    await this.render();
   }
 
   private renderWorkout(parent: HTMLElement, plan: WorkoutPlan, state: ReturnType<HomeBaseView["getWorkoutState"]>) {
@@ -1023,6 +1167,15 @@ class HomeBaseView extends ItemView {
   }
 }
 
+async function appendTodoToInbox(app: App, plugin: HomeBasePlugin, line: string) {
+  await plugin.ensureFile(plugin.settings.todoInboxPath, DEFAULT_TODO_INBOX);
+  const file = app.vault.getAbstractFileByPath(normalizePath(plugin.settings.todoInboxPath));
+  if (!(file instanceof TFile)) return;
+
+  const content = await app.vault.cachedRead(file);
+  await app.vault.modify(file, `${content.trimEnd()}\n${line}\n`);
+}
+
 class TodoModal extends Modal {
   private plugin: HomeBasePlugin;
   private todo?: TodoItem;
@@ -1123,11 +1276,7 @@ class TodoModal extends Modal {
       lines[this.todo.line] = line.replace("- [ ]", this.todo.completed ? "- [x]" : "- [ ]");
       await this.app.vault.modify(this.todo.file, lines.join("\n"));
     } else {
-      await this.plugin.ensureFile(this.plugin.settings.todoInboxPath, DEFAULT_TODO_INBOX);
-      const file = this.app.vault.getAbstractFileByPath(normalizePath(this.plugin.settings.todoInboxPath));
-      if (!(file instanceof TFile)) return;
-      const content = await this.app.vault.cachedRead(file);
-      await this.app.vault.modify(file, `${content.trimEnd()}\n${line}\n`);
+      await appendTodoToInbox(this.app, this.plugin, line);
     }
 
     this.close();
@@ -1135,15 +1284,12 @@ class TodoModal extends Modal {
   }
 
   private formatTodoLine() {
-    const tags = this.tagsValue
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((tag) => tag.startsWith("#") ? tag : `#${tag}`)
-      .join(" ");
-    const due = this.dueValue ? ` due:: ${this.dueValue}` : "";
-    const priority = this.priorityValue ? ` priority:: ${this.priorityValue}` : "";
-    const tagPart = tags ? ` ${tags}` : "";
-    return `- [ ] ${this.titleValue.trim()}${due}${priority}${tagPart}`;
+    return formatTodoLine({
+      title: this.titleValue.trim(),
+      due: this.dueValue,
+      priority: this.priorityValue,
+      tags: normalizeTodoTags(this.tagsValue.split(/\s+/))
+    });
   }
 }
 

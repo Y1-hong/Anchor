@@ -2,6 +2,20 @@
 
 This file records the main product and code changes for Home Base.
 
+## v2.3 - Faster Todo Capture
+
+- Added a Quick Add input at the top of the Todo Manager panel.
+- Added `Enter`-to-create todo capture without opening the full modal.
+- Parsed lightweight inline syntax:
+  - `today`
+  - `tomorrow`
+  - `YYYY-MM-DD`
+  - Markdown tags such as `#school`
+  - priority markers `!high`, `!medium`, and `!low`
+- Saved Quick Add todos to `Home Base/Todo Inbox.md` using the existing Markdown todo format.
+- Kept the existing `New Todo` modal as the detailed editing entry point.
+- Updated plugin version to `0.2.3`.
+
 ## v2.2 - Load Stability Upgrade
 
 - Added runtime CSS injection so the dashboard keeps its layout even if Obsidian does not load `styles.css` reliably after restart.
@@ -50,15 +64,4 @@ This file records the main product and code changes for Home Base.
   - `Skip`
   - unresolved workout prompt
 - Added basic settings for file paths and startup behavior.
-
-## Planned: v2.3 - Faster Todo Capture
-
-- Improve todo creation to feel closer to Apple Reminders.
-- Add a Quick Add input directly inside the Todo Manager panel.
-- Support pressing `Enter` to create a todo without opening a modal.
-- Parse lightweight inline syntax such as:
-  - `Finish essay tomorrow #school !high`
-  - `Review notes today #study`
-  - `Pay rent 2026-06-30 #life !high`
-- Keep the existing full edit modal for detailed editing.
 
