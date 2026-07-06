@@ -8,7 +8,8 @@ import {
   Setting,
   TFile,
   WorkspaceLeaf,
-  normalizePath
+  normalizePath,
+  requestUrl
 } from "obsidian";
 
 const VIEW_TYPE_HOME_BASE = "home-base-dashboard";
@@ -23,6 +24,12 @@ interface HomeBaseSettings {
   workoutPlanPath: string;
   workoutLogPath: string;
   showSchedulePlaceholder: boolean;
+  calendarEnabled: boolean;
+  calendarServerUrl: string;
+  calendarUsername: string;
+  calendarPassword: string;
+  calendarUrl: string;
+  calendarName: string;
 }
 
 interface TodoItem {
@@ -37,13 +44,6 @@ interface TodoItem {
   raw: string;
 }
 
-interface TodoDraft {
-  title: string;
-  due: string;
-  priority: Priority;
-  tags: string[];
-}
-
 interface WorkoutPlan {
   types: Record<string, string[]>;
   sequence: string[];
@@ -55,13 +55,59 @@ interface WorkoutLogEntry {
   status: "done" | "skipped" | "pending";
 }
 
+interface CalendarInfo {
+  href: string;
+  displayName: string;
+  writable: boolean;
+}
+
+interface CalendarEvent {
+  uid: string;
+  href: string;
+  etag: string;
+  title: string;
+  start: Date;
+  end: Date;
+  allDay: boolean;
+  location: string;
+  notes: string;
+  rawIcs: string;
+  calendarName: string;
+}
+
+interface CalendarFetchState {
+  events: CalendarEvent[];
+  error: string;
+  setupRequired: boolean;
+}
+
+interface CalendarEventDraft {
+  uid?: string;
+  href?: string;
+  etag?: string;
+  rawIcs?: string;
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  allDay: boolean;
+  location: string;
+  notes: string;
+}
+
 const DEFAULT_SETTINGS: HomeBaseSettings = {
   openOnStartup: true,
   todoInboxPath: "Home Base/Todo Inbox.md",
   todoScanFolders: "Home Base",
   workoutPlanPath: "Home Base/Workout Plan.md",
   workoutLogPath: "Home Base/Workout Log.md",
-  showSchedulePlaceholder: true
+  showSchedulePlaceholder: true,
+  calendarEnabled: false,
+  calendarServerUrl: "https://caldav.icloud.com",
+  calendarUsername: "",
+  calendarPassword: "",
+  calendarUrl: "",
+  calendarName: ""
 };
 
 const DEFAULT_TODO_INBOX = `# Todo Inbox
@@ -100,101 +146,249 @@ const DEFAULT_WORKOUT_LOG = `# Workout Log
 
 `;
 
-const QUICK_ADD_PLACEHOLDER = "Finish essay tomorrow #school !high";
+const CALDAV_NS = "urn:ietf:params:xml:ns:caldav";
+const DAV_NS = "DAV:";
 
-function parseQuickTodoInput(input: string, now = new Date()): TodoDraft | null {
-  const tokens = input.trim().split(/\s+/).filter(Boolean);
-  if (!tokens.length) return null;
+function normalizeRemoteUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
+}
 
-  let due = "";
-  let priority: Priority = "";
-  const tags: string[] = [];
-  const titleTokens: string[] = [];
+function resolveRemoteUrl(base: string, href: string) {
+  return new URL(href, normalizeRemoteUrl(base)).toString();
+}
 
-  for (const token of tokens) {
-    const lower = token.toLowerCase();
-    const priorityMatch = lower.match(/^!(high|medium|low)$/);
-    if (priorityMatch) {
-      priority = priorityMatch[1] as Priority;
-      continue;
+function calendarEventFileName(uid: string) {
+  return `${encodeURIComponent(uid)}.ics`;
+}
+
+function unfoldIcsLines(content: string) {
+  const rawLines = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const lines: string[] = [];
+  for (const line of rawLines) {
+    if (/^[ \t]/.test(line) && lines.length) {
+      lines[lines.length - 1] += line.slice(1);
+    } else if (line.trim()) {
+      lines.push(line);
     }
-
-    if (/^#[\w/-]+$/.test(token)) {
-      tags.push(token);
-      continue;
-    }
-
-    const quickDue = parseQuickDueToken(lower, now);
-    if (quickDue) {
-      due = quickDue;
-      continue;
-    }
-
-    titleTokens.push(token);
   }
+  return lines;
+}
 
-  const title = titleTokens.join(" ").trim();
-  if (!title) return null;
-
+function parseIcsProperty(line: string) {
+  const colon = line.indexOf(":");
+  if (colon === -1) return null;
+  const nameAndParams = line.slice(0, colon);
+  const [name, ...params] = nameAndParams.split(";");
   return {
-    title,
-    due,
-    priority,
-    tags: normalizeTodoTags(tags)
+    name: name.toUpperCase(),
+    params: params.join(";"),
+    value: line.slice(colon + 1)
   };
 }
 
-function parseQuickDueToken(token: string, now: Date) {
-  if (token === "today") return formatDateKey(now);
-  if (token === "tomorrow") return formatDateKey(addDays(now, 1));
-  if (/^\d{4}-\d{2}-\d{2}$/.test(token) && isValidDateKey(token)) return token;
-  return "";
+function unescapeIcsText(value: string) {
+  return value
+    .replace(/\\n/gi, "\n")
+    .replace(/\\,/g, ",")
+    .replace(/\\;/g, ";")
+    .replace(/\\\\/g, "\\");
 }
 
-function isValidDateKey(value: string) {
-  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return false;
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(year, month - 1, day);
-
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+function escapeIcsText(value: string) {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\r?\n/g, "\\n")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,");
 }
 
-function normalizeTodoTags(tags: string[]) {
-  const seen = new Set<string>();
-  return tags
-    .map((tag) => tag.trim())
-    .filter(Boolean)
-    .map((tag) => tag.startsWith("#") ? tag : `#${tag}`)
-    .filter((tag) => {
-      if (seen.has(tag)) return false;
-      seen.add(tag);
-      return true;
-    });
+function foldIcsLine(line: string) {
+  const chunks: string[] = [];
+  let remaining = line;
+  while (remaining.length > 74) {
+    chunks.push(remaining.slice(0, 74));
+    remaining = ` ${remaining.slice(74)}`;
+  }
+  chunks.push(remaining);
+  return chunks.join("\r\n");
 }
 
-function formatTodoLine(todo: TodoDraft, completed = false) {
-  const due = todo.due ? ` due:: ${todo.due}` : "";
-  const priority = todo.priority ? ` priority:: ${todo.priority}` : "";
-  const tags = todo.tags.length ? ` ${todo.tags.join(" ")}` : "";
-  return `- [${completed ? "x" : " "}] ${todo.title.trim()}${due}${priority}${tags}`;
+function formatIcsDate(date: Date) {
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+function formatIcsUtcDateTime(date: Date) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
-function addDays(date: Date, days: number) {
+function parseIcsDateValue(value: string, params: string) {
+  const allDay = /VALUE=DATE/i.test(params) || /^\d{8}$/.test(value);
+  if (/^\d{8}$/.test(value)) {
+    return {
+      date: new Date(Number(value.slice(0, 4)), Number(value.slice(4, 6)) - 1, Number(value.slice(6, 8))),
+      allDay
+    };
+  }
+
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/);
+  if (!match) return { date: new Date(), allDay };
+
+  const [, year, month, day, hour, minute, second, utc] = match;
+  const parts = [year, month, day, hour, minute, second].map((part) => Number(part));
+  if (utc) {
+    return {
+      date: new Date(Date.UTC(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5])),
+      allDay
+    };
+  }
+  return {
+    date: new Date(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5]),
+    allDay
+  };
+}
+
+function addMinutes(date: Date, minutes: number) {
+  return new Date(date.getTime() + minutes * 60_000);
+}
+
+function makeEventDate(date: string, time: string) {
+  const [year, month, day] = date.split("-").map((part) => Number(part));
+  const [hour, minute] = time.split(":").map((part) => Number(part));
+  return new Date(year, month - 1, day, hour || 0, minute || 0, 0);
+}
+
+function calendarDraftToDates(draft: CalendarEventDraft) {
+  const [year, month, day] = draft.date.split("-").map((part) => Number(part));
+  if (draft.allDay) {
+    const start = new Date(year, month - 1, day);
+    return { start, end: addDaysToDate(start, 1) };
+  }
+
+  const start = makeEventDate(draft.date, draft.startTime || "09:00");
+  let end = makeEventDate(draft.date, draft.endTime || "10:00");
+  if (end <= start) end = addMinutes(start, 60);
+  return { start, end };
+}
+
+function addDaysToDate(date: Date, days: number) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
-  return startOfDay(next);
+  return next;
 }
 
-function formatDateKey(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+function buildIcsEventLines(draft: CalendarEventDraft, uid: string) {
+  const { start, end } = calendarDraftToDates(draft);
+  const now = new Date();
+  const lines = [
+    `UID:${uid}`,
+    `DTSTAMP:${formatIcsUtcDateTime(now)}`,
+    `LAST-MODIFIED:${formatIcsUtcDateTime(now)}`,
+    `SUMMARY:${escapeIcsText(draft.title.trim())}`
+  ];
+
+  if (draft.allDay) {
+    lines.push(`DTSTART;VALUE=DATE:${formatIcsDate(start)}`);
+    lines.push(`DTEND;VALUE=DATE:${formatIcsDate(end)}`);
+  } else {
+    lines.push(`DTSTART:${formatIcsUtcDateTime(start)}`);
+    lines.push(`DTEND:${formatIcsUtcDateTime(end)}`);
+  }
+
+  if (draft.location.trim()) lines.push(`LOCATION:${escapeIcsText(draft.location.trim())}`);
+  if (draft.notes.trim()) lines.push(`DESCRIPTION:${escapeIcsText(draft.notes.trim())}`);
+  return lines;
+}
+
+function buildNewIcsEvent(draft: CalendarEventDraft, uid: string) {
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Home Base//Obsidian Calendar//EN",
+    "CALSCALE:GREGORIAN",
+    "BEGIN:VEVENT",
+    `CREATED:${formatIcsUtcDateTime(new Date())}`,
+    ...buildIcsEventLines(draft, uid),
+    "END:VEVENT",
+    "END:VCALENDAR"
+  ];
+  return `${lines.map(foldIcsLine).join("\r\n")}\r\n`;
+}
+
+function updateExistingIcsEvent(rawIcs: string, draft: CalendarEventDraft, uid: string) {
+  const lines = unfoldIcsLines(rawIcs);
+  const begin = lines.findIndex((line) => line.toUpperCase() === "BEGIN:VEVENT");
+  const end = lines.findIndex((line, index) => index > begin && line.toUpperCase() === "END:VEVENT");
+  if (begin === -1 || end === -1) return buildNewIcsEvent(draft, uid);
+
+  const replacement = buildIcsEventLines(draft, uid);
+  const replacedNames = new Set(["UID", "DTSTAMP", "LAST-MODIFIED", "SUMMARY", "DTSTART", "DTEND", "LOCATION", "DESCRIPTION"]);
+  const nextLines = [
+    ...lines.slice(0, begin + 1),
+    ...replacement,
+    ...lines.slice(begin + 1, end).filter((line) => {
+      const property = parseIcsProperty(line);
+      return !property || !replacedNames.has(property.name);
+    }),
+    ...lines.slice(end)
+  ];
+  return `${nextLines.map(foldIcsLine).join("\r\n")}\r\n`;
+}
+
+function parseCalendarEvent(rawIcs: string, href: string, etag: string, calendarName: string): CalendarEvent | null {
+  const lines = unfoldIcsLines(rawIcs);
+  const begin = lines.findIndex((line) => line.toUpperCase() === "BEGIN:VEVENT");
+  const end = lines.findIndex((line, index) => index > begin && line.toUpperCase() === "END:VEVENT");
+  if (begin === -1 || end === -1) return null;
+
+  const properties = lines.slice(begin + 1, end)
+    .map(parseIcsProperty)
+    .filter((property): property is NonNullable<ReturnType<typeof parseIcsProperty>> => Boolean(property));
+  const find = (name: string) => properties.find((property) => property.name === name);
+  const uid = find("UID")?.value || href.split("/").pop()?.replace(/\.ics$/i, "") || crypto.randomUUID();
+  const startProperty = find("DTSTART");
+  if (!startProperty) return null;
+  const parsedStart = parseIcsDateValue(startProperty.value, startProperty.params);
+  const endProperty = find("DTEND");
+  const parsedEnd = endProperty ? parseIcsDateValue(endProperty.value, endProperty.params) : {
+    date: parsedStart.allDay ? addDaysToDate(parsedStart.date, 1) : addMinutes(parsedStart.date, 60),
+    allDay: parsedStart.allDay
+  };
+
+  return {
+    uid,
+    href,
+    etag,
+    title: unescapeIcsText(find("SUMMARY")?.value ?? ""),
+    start: parsedStart.date,
+    end: parsedEnd.date,
+    allDay: parsedStart.allDay,
+    location: unescapeIcsText(find("LOCATION")?.value ?? ""),
+    notes: unescapeIcsText(find("DESCRIPTION")?.value ?? ""),
+    rawIcs,
+    calendarName
+  };
+}
+
+function getElementsByLocalName(parent: Document | Element, localName: string): Element[] {
+  const root = parent instanceof Document ? parent.documentElement : parent;
+  const elements = Array.from(root.getElementsByTagName("*"));
+  if (root.localName === localName) elements.unshift(root);
+  return elements.filter((element) => element.localName === localName);
+}
+
+function firstTextByLocalName(parent: Document | Element, localName: string) {
+  return getElementsByLocalName(parent, localName)[0]?.textContent?.trim() ?? "";
+}
+
+function hrefInside(parent: Document | Element, localName: string) {
+  const container = getElementsByLocalName(parent, localName)[0];
+  return container ? firstTextByLocalName(container, "href") : "";
+}
+
+function parseXml(text: string) {
+  return new DOMParser().parseFromString(text, "application/xml");
 }
 
 const HOME_BASE_STYLES = `
@@ -308,6 +502,64 @@ const HOME_BASE_STYLES = `
   font-size: 13px;
 }
 
+.home-base-calendar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.home-base-calendar-error {
+  padding: 14px;
+  border: 1px solid rgba(199, 74, 48, 0.5);
+  border-radius: 8px;
+  color: #ff8f7e;
+  background: rgba(199, 74, 48, 0.12);
+}
+
+.home-base-calendar-error p {
+  margin: 6px 0 0;
+}
+
+.home-base-calendar-group {
+  margin-top: 18px;
+}
+
+.home-base-calendar-event {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.home-base-calendar-time {
+  color: var(--interactive-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.home-base-calendar-time.is-all-day {
+  color: var(--text-muted);
+}
+
+.home-base-calendar-title {
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.home-base-calendar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .home-base-italic {
   font-style: italic;
 }
@@ -315,15 +567,8 @@ const HOME_BASE_STYLES = `
 .home-base-todo-controls {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 10px;
   margin-bottom: 18px;
-}
-
-.home-base-quick-add {
-  flex: 1 1 260px;
-  min-width: 0;
-  min-height: 36px;
 }
 
 .home-base-primary-button,
@@ -558,13 +803,16 @@ const HOME_BASE_STYLES = `
     grid-template-columns: 28px minmax(0, 1fr);
   }
 
+  .home-base-calendar-event {
+    grid-template-columns: 1fr;
+  }
+
   .home-base-actions {
     grid-column: 2;
   }
 
-  .home-base-todo-controls {
-    align-items: stretch;
-    flex-direction: column;
+  .home-base-calendar-event .home-base-actions {
+    grid-column: 1;
   }
 
   .home-base-routine-card-row,
@@ -651,6 +899,232 @@ export default class HomeBasePlugin extends Plugin {
     }
   }
 
+  async fetchCalendarEvents(start: Date, end: Date): Promise<CalendarFetchState> {
+    if (!this.hasCalendarConfig()) {
+      return { events: [], error: "", setupRequired: true };
+    }
+
+    try {
+      const calendar = await this.getDefaultCalendar();
+      if (!calendar) return { events: [], error: "No writable CalDAV calendar was found.", setupRequired: false };
+
+      const body = `<?xml version="1.0" encoding="utf-8" ?>
+<c:calendar-query xmlns:d="${DAV_NS}" xmlns:c="${CALDAV_NS}">
+  <d:prop>
+    <d:getetag />
+    <c:calendar-data />
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VEVENT">
+        <c:time-range start="${formatIcsUtcDateTime(start)}" end="${formatIcsUtcDateTime(end)}" />
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>`;
+      const response = await this.caldavRequest(calendar.href, "REPORT", body, { Depth: "1" });
+      const document = parseXml(response.text);
+      const events = getElementsByLocalName(document, "response")
+        .map((element) => {
+          const href = resolveRemoteUrl(calendar.href, firstTextByLocalName(element, "href"));
+          const etag = firstTextByLocalName(element, "getetag");
+          const calendarData = firstTextByLocalName(element, "calendar-data");
+          if (!calendarData) return null;
+          return parseCalendarEvent(calendarData, href, etag, calendar.displayName);
+        })
+        .filter((event): event is CalendarEvent => Boolean(event))
+        .filter((event) => event.end >= start && event.start < end)
+        .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+      return { events, error: "", setupRequired: false };
+    } catch (error) {
+      return { events: [], error: this.readableCalendarError(error), setupRequired: false };
+    }
+  }
+
+  async saveCalendarEvent(draft: CalendarEventDraft) {
+    const calendar = await this.getDefaultCalendar();
+    if (!calendar) {
+      new Notice("Set up a default CalDAV calendar first.");
+      return;
+    }
+
+    const uid = draft.uid || crypto.randomUUID();
+    const href = draft.href || resolveRemoteUrl(calendar.href, calendarEventFileName(uid));
+    const ics = draft.rawIcs ? updateExistingIcsEvent(draft.rawIcs, draft, uid) : buildNewIcsEvent(draft, uid);
+    const headers: Record<string, string> = {
+      "Content-Type": "text/calendar; charset=utf-8"
+    };
+
+    if (draft.etag) {
+      headers["If-Match"] = draft.etag;
+    } else {
+      headers["If-None-Match"] = "*";
+    }
+
+    try {
+      await this.caldavRequest(href, "PUT", ics, headers);
+      new Notice("Calendar event saved.");
+    } catch (error) {
+      new Notice(this.readableCalendarError(error));
+      throw error;
+    }
+  }
+
+  async deleteCalendarEvent(event: CalendarEvent) {
+    try {
+      await this.caldavRequest(event.href, "DELETE", "", event.etag ? { "If-Match": event.etag } : {});
+      new Notice("Calendar event deleted.");
+    } catch (error) {
+      new Notice(this.readableCalendarError(error));
+      throw error;
+    }
+  }
+
+  async testCalendarConnection() {
+    const calendar = await this.getDefaultCalendar(true);
+    if (!calendar) throw new Error("No calendar was found for this CalDAV account.");
+    return calendar;
+  }
+
+  private hasCalendarConfig() {
+    return Boolean(
+      this.settings.calendarEnabled &&
+      this.settings.calendarServerUrl.trim() &&
+      this.settings.calendarUsername.trim() &&
+      this.settings.calendarPassword.trim()
+    );
+  }
+
+  private async getDefaultCalendar(forceDiscovery = false): Promise<CalendarInfo | null> {
+    if (!this.hasCalendarConfig()) return null;
+
+    if (this.settings.calendarUrl.trim() && !forceDiscovery) {
+      return {
+        href: normalizeRemoteUrl(this.settings.calendarUrl),
+        displayName: this.settings.calendarName || "Calendar",
+        writable: true
+      };
+    }
+
+    const calendars = await this.discoverCalendars();
+    const preferred = calendars.find((calendar) => calendar.href === normalizeRemoteUrl(this.settings.calendarUrl)) ?? calendars[0];
+    if (!preferred) return null;
+
+    if (!preferred.writable) {
+      throw new Error(`"${preferred.displayName}" appears to be read-only. Choose a writable iCloud calendar.`);
+    }
+
+    this.settings.calendarUrl = preferred.href;
+    this.settings.calendarName = preferred.displayName;
+    await this.saveSettings();
+    return preferred;
+  }
+
+  private async discoverCalendars(): Promise<CalendarInfo[]> {
+    const serverUrl = normalizeRemoteUrl(this.settings.calendarServerUrl);
+    const principalResponse = await this.caldavRequest(
+      serverUrl,
+      "PROPFIND",
+      `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="${DAV_NS}">
+  <d:prop>
+    <d:current-user-principal />
+  </d:prop>
+</d:propfind>`,
+      { Depth: "0" }
+    );
+    const principalDocument = parseXml(principalResponse.text);
+    const principalHref = hrefInside(principalDocument, "current-user-principal");
+    if (!principalHref) throw new Error("CalDAV server did not return a principal URL.");
+
+    const homeResponse = await this.caldavRequest(
+      resolveRemoteUrl(serverUrl, principalHref),
+      "PROPFIND",
+      `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="${DAV_NS}" xmlns:c="${CALDAV_NS}">
+  <d:prop>
+    <c:calendar-home-set />
+  </d:prop>
+</d:propfind>`,
+      { Depth: "0" }
+    );
+    const homeDocument = parseXml(homeResponse.text);
+    const homeHref = hrefInside(homeDocument, "calendar-home-set");
+    if (!homeHref) throw new Error("CalDAV server did not return a calendar home.");
+
+    const homeUrl = resolveRemoteUrl(serverUrl, homeHref);
+    const calendarsResponse = await this.caldavRequest(
+      homeUrl,
+      "PROPFIND",
+      `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="${DAV_NS}" xmlns:c="${CALDAV_NS}">
+  <d:prop>
+    <d:displayname />
+    <d:resourcetype />
+    <d:current-user-privilege-set />
+    <c:supported-calendar-component-set />
+  </d:prop>
+</d:propfind>`,
+      { Depth: "1" }
+    );
+    const calendarsDocument = parseXml(calendarsResponse.text);
+
+    return getElementsByLocalName(calendarsDocument, "response")
+      .map((element) => {
+        const href = firstTextByLocalName(element, "href");
+        const resourceType = getElementsByLocalName(element, "resourcetype")[0];
+        const isCalendar = Boolean(resourceType && getElementsByLocalName(resourceType, "calendar").length);
+        const supportedComponents = getElementsByLocalName(element, "comp").map((comp) => (comp.getAttribute("name") ?? "").toUpperCase());
+        const supportsEvents = !supportedComponents.length || supportedComponents.includes("VEVENT");
+        const privilegeSet = getElementsByLocalName(element, "current-user-privilege-set")[0];
+        const privileges = privilegeSet ? getElementsByLocalName(privilegeSet, "privilege").flatMap((privilege) => {
+          return Array.from(privilege.children).map((child) => child.localName);
+        }) : [];
+        const writable = !privileges.length || privileges.some((privilege) => {
+          return ["write", "write-content", "bind", "unbind"].includes(privilege);
+        });
+        if (!href || !isCalendar || !supportsEvents) return null;
+        return {
+          href: resolveRemoteUrl(homeUrl, href),
+          displayName: firstTextByLocalName(element, "displayname") || "Calendar",
+          writable
+        };
+      })
+      .filter((calendar): calendar is CalendarInfo => Boolean(calendar))
+      .filter((calendar) => calendar.writable);
+  }
+
+  private async caldavRequest(url: string, method: string, body = "", headers: Record<string, string> = {}) {
+    const response = await requestUrl({
+      url,
+      method,
+      body,
+      headers: {
+        Authorization: `Basic ${btoa(`${this.settings.calendarUsername}:${this.settings.calendarPassword}`)}`,
+        "Content-Type": "application/xml; charset=utf-8",
+        ...headers
+      }
+    });
+
+    if (response.status >= 400) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("Calendar authentication failed. Check your Apple ID and app-specific password.");
+      }
+      if (response.status === 409 || response.status === 412) {
+        throw new Error("This event changed remotely. Refresh Home Base and try again.");
+      }
+      throw new Error(`CalDAV request failed with status ${response.status}.`);
+    }
+
+    return response;
+  }
+
+  private readableCalendarError(error: unknown) {
+    if (error instanceof Error) return error.message;
+    return "Calendar sync failed.";
+  }
+
   async ensureDefaultFiles() {
     await this.ensureFile(this.settings.todoInboxPath, DEFAULT_TODO_INBOX);
     await this.ensureFile(this.settings.workoutPlanPath, DEFAULT_WORKOUT_PLAN);
@@ -726,6 +1200,7 @@ class HomeBaseView extends ItemView {
     const todos = await this.loadTodos();
     const plan = await this.loadWorkoutPlan();
     const log = await this.loadWorkoutLog();
+    const calendar = await this.plugin.fetchCalendarEvents(this.startOfDay(new Date()), this.addDays(new Date(), 8));
     const workoutState = this.getWorkoutState(plan, log);
 
     this.renderHeader(root);
@@ -734,9 +1209,7 @@ class HomeBaseView extends ItemView {
     const left = grid.createDiv({ cls: "home-base-column home-base-left" });
     const right = grid.createDiv({ cls: "home-base-column home-base-right" });
 
-    if (this.plugin.settings.showSchedulePlaceholder) {
-      this.renderSchedule(left);
-    }
+    this.renderCalendar(left, calendar);
     this.renderWorkout(left, plan, workoutState);
     this.renderTodos(right, todos);
   }
@@ -765,21 +1238,94 @@ class HomeBaseView extends ItemView {
     refresh.onClickEvent(() => void this.render());
   }
 
-  private renderSchedule(parent: HTMLElement) {
-    const panel = parent.createDiv({ cls: "home-base-panel" });
+  private renderCalendar(parent: HTMLElement, state: CalendarFetchState) {
+    const panel = parent.createDiv({ cls: "home-base-panel home-base-calendar-panel" });
     const title = panel.createDiv({ cls: "home-base-panel-title" });
     title.createEl("span", { cls: "home-base-icon", text: "Cal" });
-    title.createEl("h2", { text: "Schedule" });
-    title.createEl("span", { cls: "home-base-pill", text: "Coming soon" });
+    title.createEl("h2", { text: "Calendar" });
+    if (this.plugin.settings.calendarName) {
+      title.createEl("span", { cls: "home-base-pill", text: this.plugin.settings.calendarName });
+    }
 
-    const empty = panel.createDiv({ cls: "home-base-schedule-empty" });
-    empty.createDiv({ cls: "home-base-calendar-mark", text: "Calendar" });
-    const copy = empty.createDiv();
-    copy.createEl("strong", { text: "Calendar integration planned" });
-    copy.createEl("p", { text: "View your events and time blocks right here in the future." });
+    const controls = panel.createDiv({ cls: "home-base-calendar-controls" });
+    const add = controls.createEl("button", { cls: "mod-cta home-base-primary-button", text: "+ Event" });
+    add.disabled = state.setupRequired || Boolean(state.error);
+    add.onClickEvent(() => {
+      new CalendarEventModal(this.app, this.plugin, undefined, () => void this.render()).open();
+    });
 
-    panel.createEl("h3", { text: "Today (preview)" });
-    panel.createEl("p", { cls: "home-base-muted home-base-italic", text: "No events scheduled" });
+    const refresh = controls.createEl("button", { cls: "home-base-secondary-button", text: "Refresh" });
+    refresh.onClickEvent(() => void this.render());
+
+    if (state.setupRequired) {
+      const setup = panel.createDiv({ cls: "home-base-schedule-empty" });
+      setup.createDiv({ cls: "home-base-calendar-mark", text: "CalDAV" });
+      const copy = setup.createDiv();
+      copy.createEl("strong", { text: "Connect iCloud Calendar" });
+      copy.createEl("p", {
+        text: "Enable Calendar in Home Base settings, then add your iCloud CalDAV account and default calendar."
+      });
+      return;
+    }
+
+    if (state.error) {
+      const error = panel.createDiv({ cls: "home-base-calendar-error" });
+      error.createEl("strong", { text: "Calendar could not sync" });
+      error.createEl("p", { text: state.error });
+      return;
+    }
+
+    const today = this.startOfDay(new Date());
+    const tomorrow = this.addDays(today, 1);
+    const nextWeek = this.addDays(today, 7);
+    const todayEvents = state.events.filter((event) => this.eventOccursOn(event, today));
+    const upcomingEvents = state.events.filter((event) => {
+      const eventDay = this.startOfDay(event.start);
+      return eventDay >= tomorrow && eventDay <= nextWeek;
+    });
+
+    this.renderCalendarGroup(panel, "Today", todayEvents, "No events today");
+    this.renderCalendarGroup(panel, "Next 7 Days", upcomingEvents, "No upcoming events");
+  }
+
+  private renderCalendarGroup(parent: HTMLElement, heading: string, events: CalendarEvent[], emptyText: string) {
+    const group = parent.createDiv({ cls: "home-base-calendar-group" });
+    group.createEl("h3", { text: heading });
+    if (!events.length) {
+      group.createEl("p", { cls: "home-base-muted home-base-italic", text: emptyText });
+      return;
+    }
+
+    for (const event of events) {
+      this.renderCalendarEvent(group, event);
+    }
+  }
+
+  private renderCalendarEvent(parent: HTMLElement, event: CalendarEvent) {
+    const item = parent.createDiv({ cls: "home-base-calendar-event" });
+    const time = item.createDiv({ cls: "home-base-calendar-time", text: this.formatCalendarEventTime(event) });
+    if (event.allDay) time.addClass("is-all-day");
+
+    const body = item.createDiv({ cls: "home-base-calendar-body" });
+    body.createDiv({ cls: "home-base-calendar-title", text: event.title || "Untitled event" });
+    const meta = body.createDiv({ cls: "home-base-calendar-meta" });
+    if (!this.eventOccursOn(event, this.startOfDay(new Date()))) {
+      meta.createEl("span", { text: this.formatCalendarDate(event.start) });
+    }
+    if (event.location) {
+      meta.createEl("span", { text: event.location });
+    }
+
+    const actions = item.createDiv({ cls: "home-base-actions" });
+    const edit = actions.createEl("button", { cls: "home-base-ghost-button", text: "Edit" });
+    edit.onClickEvent(() => new CalendarEventModal(this.app, this.plugin, event, () => void this.render()).open());
+    const remove = actions.createEl("button", { cls: "home-base-ghost-button", text: "Delete" });
+    remove.onClickEvent(async () => {
+      const confirmed = confirm(`Delete "${event.title || "Untitled event"}"?`);
+      if (!confirmed) return;
+      await this.plugin.deleteCalendarEvent(event);
+      await this.render();
+    });
   }
 
   private renderTodos(parent: HTMLElement, todos: TodoItem[]) {
@@ -789,20 +1335,6 @@ class HomeBaseView extends ItemView {
     title.createEl("h2", { text: "Todo Manager" });
 
     const controls = panel.createDiv({ cls: "home-base-todo-controls" });
-    const quickAdd = controls.createEl("input", {
-      cls: "home-base-quick-add",
-      attr: {
-        "aria-label": "Quick add todo",
-        placeholder: QUICK_ADD_PLACEHOLDER
-      }
-    });
-    quickAdd.type = "text";
-    quickAdd.onkeydown = (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      void this.createQuickTodo(quickAdd);
-    };
-
     const newTodo = controls.createEl("button", { cls: "mod-cta home-base-primary-button", text: "+ New Todo" });
     newTodo.onClickEvent(() => {
       new TodoModal(this.app, this.plugin, undefined, () => void this.render()).open();
@@ -859,20 +1391,6 @@ class HomeBaseView extends ItemView {
       await this.deleteTodo(todo);
       await this.render();
     });
-  }
-
-  private async createQuickTodo(input: HTMLInputElement) {
-    const todo = parseQuickTodoInput(input.value);
-    if (!todo) {
-      new Notice("Add a todo title before saving.");
-      input.focus();
-      return;
-    }
-
-    await appendTodoToInbox(this.app, this.plugin, formatTodoLine(todo));
-    input.value = "";
-    new Notice("Todo added.");
-    await this.render();
   }
 
   private renderWorkout(parent: HTMLElement, plan: WorkoutPlan, state: ReturnType<HomeBaseView["getWorkoutState"]>) {
@@ -1133,6 +1651,23 @@ class HomeBaseView extends ItemView {
     return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
+  private eventOccursOn(event: CalendarEvent, day: Date) {
+    const start = this.startOfDay(event.start);
+    const end = this.startOfDay(event.allDay ? this.addDays(event.end, -1) : event.end);
+    return start <= day && end >= day;
+  }
+
+  private formatCalendarEventTime(event: CalendarEvent) {
+    if (event.allDay) return "All day";
+    const start = event.start.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const end = event.end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `${start} - ${end}`;
+  }
+
+  private formatCalendarDate(date: Date) {
+    return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }
+
   private getGreeting() {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
@@ -1165,15 +1700,6 @@ class HomeBaseView extends ItemView {
   private capitalize(value: string) {
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
-}
-
-async function appendTodoToInbox(app: App, plugin: HomeBasePlugin, line: string) {
-  await plugin.ensureFile(plugin.settings.todoInboxPath, DEFAULT_TODO_INBOX);
-  const file = app.vault.getAbstractFileByPath(normalizePath(plugin.settings.todoInboxPath));
-  if (!(file instanceof TFile)) return;
-
-  const content = await app.vault.cachedRead(file);
-  await app.vault.modify(file, `${content.trimEnd()}\n${line}\n`);
 }
 
 class TodoModal extends Modal {
@@ -1276,7 +1802,11 @@ class TodoModal extends Modal {
       lines[this.todo.line] = line.replace("- [ ]", this.todo.completed ? "- [x]" : "- [ ]");
       await this.app.vault.modify(this.todo.file, lines.join("\n"));
     } else {
-      await appendTodoToInbox(this.app, this.plugin, line);
+      await this.plugin.ensureFile(this.plugin.settings.todoInboxPath, DEFAULT_TODO_INBOX);
+      const file = this.app.vault.getAbstractFileByPath(normalizePath(this.plugin.settings.todoInboxPath));
+      if (!(file instanceof TFile)) return;
+      const content = await this.app.vault.cachedRead(file);
+      await this.app.vault.modify(file, `${content.trimEnd()}\n${line}\n`);
     }
 
     this.close();
@@ -1284,12 +1814,184 @@ class TodoModal extends Modal {
   }
 
   private formatTodoLine() {
-    return formatTodoLine({
-      title: this.titleValue.trim(),
-      due: this.dueValue,
-      priority: this.priorityValue,
-      tags: normalizeTodoTags(this.tagsValue.split(/\s+/))
-    });
+    const tags = this.tagsValue
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((tag) => tag.startsWith("#") ? tag : `#${tag}`)
+      .join(" ");
+    const due = this.dueValue ? ` due:: ${this.dueValue}` : "";
+    const priority = this.priorityValue ? ` priority:: ${this.priorityValue}` : "";
+    const tagPart = tags ? ` ${tags}` : "";
+    return `- [ ] ${this.titleValue.trim()}${due}${priority}${tagPart}`;
+  }
+}
+
+class CalendarEventModal extends Modal {
+  private plugin: HomeBasePlugin;
+  private event?: CalendarEvent;
+  private onSave: () => void;
+  private titleValue = "";
+  private dateValue = "";
+  private startTimeValue = "09:00";
+  private endTimeValue = "10:00";
+  private allDayValue = false;
+  private locationValue = "";
+  private notesValue = "";
+
+  constructor(app: App, plugin: HomeBasePlugin, event: CalendarEvent | undefined, onSave: () => void) {
+    super(app);
+    this.plugin = plugin;
+    this.event = event;
+    this.onSave = onSave;
+
+    if (event) {
+      this.titleValue = event.title;
+      this.dateValue = this.dateInputValue(event.start);
+      this.startTimeValue = this.timeInputValue(event.start);
+      this.endTimeValue = this.timeInputValue(event.end);
+      this.allDayValue = event.allDay;
+      this.locationValue = event.location;
+      this.notesValue = event.notes;
+    } else {
+      const now = new Date();
+      this.dateValue = this.dateInputValue(now);
+    }
+  }
+
+  onOpen() {
+    this.render();
+  }
+
+  private render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("home-base-modal");
+    contentEl.createEl("h2", { text: this.event ? "Edit Event" : "New Event" });
+
+    new Setting(contentEl)
+      .setName("Title")
+      .addText((text) => {
+        text.setValue(this.titleValue);
+        text.onChange((value) => {
+          this.titleValue = value;
+        });
+      });
+
+    new Setting(contentEl)
+      .setName("All day")
+      .addToggle((toggle) => {
+        toggle.setValue(this.allDayValue);
+        toggle.onChange((value) => {
+          this.allDayValue = value;
+          this.render();
+        });
+      });
+
+    new Setting(contentEl)
+      .setName("Date")
+      .addText((text) => {
+        text.inputEl.type = "date";
+        text.setValue(this.dateValue);
+        text.onChange((value) => {
+          this.dateValue = value;
+        });
+      });
+
+    if (!this.allDayValue) {
+      new Setting(contentEl)
+        .setName("Start time")
+        .addText((text) => {
+          text.inputEl.type = "time";
+          text.setValue(this.startTimeValue);
+          text.onChange((value) => {
+            this.startTimeValue = value;
+          });
+        });
+
+      new Setting(contentEl)
+        .setName("End time")
+        .addText((text) => {
+          text.inputEl.type = "time";
+          text.setValue(this.endTimeValue);
+          text.onChange((value) => {
+            this.endTimeValue = value;
+          });
+        });
+    }
+
+    new Setting(contentEl)
+      .setName("Location")
+      .addText((text) => {
+        text.setValue(this.locationValue);
+        text.onChange((value) => {
+          this.locationValue = value;
+        });
+      });
+
+    new Setting(contentEl)
+      .setName("Notes")
+      .addTextArea((text) => {
+        text.setValue(this.notesValue);
+        text.onChange((value) => {
+          this.notesValue = value;
+        });
+      });
+
+    const footer = contentEl.createDiv({ cls: "home-base-modal-footer" });
+    if (this.event) {
+      const remove = footer.createEl("button", { text: "Delete" });
+      remove.onClickEvent(() => void this.deleteEvent());
+    }
+    const cancel = footer.createEl("button", { text: "Cancel" });
+    cancel.onClickEvent(() => this.close());
+    const save = footer.createEl("button", { cls: "mod-cta", text: "Save Event" });
+    save.onClickEvent(() => void this.saveEvent());
+  }
+
+  private async saveEvent() {
+    if (!this.titleValue.trim()) {
+      new Notice("Event title is required.");
+      return;
+    }
+    if (!this.dateValue) {
+      new Notice("Event date is required.");
+      return;
+    }
+
+    const draft: CalendarEventDraft = {
+      uid: this.event?.uid,
+      href: this.event?.href,
+      etag: this.event?.etag,
+      rawIcs: this.event?.rawIcs,
+      title: this.titleValue,
+      date: this.dateValue,
+      startTime: this.startTimeValue,
+      endTime: this.endTimeValue,
+      allDay: this.allDayValue,
+      location: this.locationValue,
+      notes: this.notesValue
+    };
+
+    await this.plugin.saveCalendarEvent(draft);
+    this.close();
+    this.onSave();
+  }
+
+  private async deleteEvent() {
+    if (!this.event) return;
+    const confirmed = confirm(`Delete "${this.event.title || "Untitled event"}"?`);
+    if (!confirmed) return;
+    await this.plugin.deleteCalendarEvent(this.event);
+    this.close();
+    this.onSave();
+  }
+
+  private dateInputValue(date: Date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  }
+
+  private timeInputValue(date: Date) {
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   }
 }
 
@@ -1531,6 +2233,103 @@ class HomeBaseSettingTab extends PluginSettingTab {
           });
       });
 
+    containerEl.createEl("h3", { text: "Calendar" });
+
+    new Setting(containerEl)
+      .setName("Enable calendar")
+      .setDesc("Connect a writable CalDAV calendar, such as iCloud Calendar.")
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.calendarEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.calendarEnabled = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("CalDAV server URL")
+      .setDesc("For iCloud, use https://caldav.icloud.com.")
+      .addText((text) => {
+        text
+          .setPlaceholder("https://caldav.icloud.com")
+          .setValue(this.plugin.settings.calendarServerUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.calendarServerUrl = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Calendar username")
+      .setDesc("For iCloud, use your Apple ID email.")
+      .addText((text) => {
+        text
+          .setPlaceholder("name@example.com")
+          .setValue(this.plugin.settings.calendarUsername)
+          .onChange(async (value) => {
+            this.plugin.settings.calendarUsername = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Calendar password")
+      .setDesc("For iCloud, use an app-specific password.")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setValue(this.plugin.settings.calendarPassword)
+          .onChange(async (value) => {
+            this.plugin.settings.calendarPassword = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Default calendar URL")
+      .setDesc("Leave blank and use Test connection to auto-select the first writable event calendar.")
+      .addText((text) => {
+        text
+          .setPlaceholder("https://caldav.icloud.com/...")
+          .setValue(this.plugin.settings.calendarUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.calendarUrl = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Default calendar name")
+      .setDesc("Shown in the dashboard header.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Calendar")
+          .setValue(this.plugin.settings.calendarName)
+          .onChange(async (value) => {
+            this.plugin.settings.calendarName = value.trim();
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Test calendar connection")
+      .setDesc("Discovers writable CalDAV event calendars and saves the first writable calendar when no default URL is set.")
+      .addButton((button) => {
+        button.setButtonText("Test");
+        button.onClick(async () => {
+          try {
+            const calendar = await this.plugin.testCalendarConnection();
+            new Notice(`Connected to ${calendar.displayName}.`);
+            this.display();
+          } catch (error) {
+            new Notice(error instanceof Error ? error.message : "Calendar connection failed.");
+          }
+        });
+      });
+
+    containerEl.createEl("h3", { text: "Todos" });
+
     new Setting(containerEl)
       .setName("Todo inbox file")
       .setDesc("New todos created from the dashboard are saved here.")
@@ -1555,6 +2354,8 @@ class HomeBaseSettingTab extends PluginSettingTab {
           });
       });
 
+    containerEl.createEl("h3", { text: "Workout" });
+
     new Setting(containerEl)
       .setName("Workout plan file")
       .addText((text) => {
@@ -1573,18 +2374,6 @@ class HomeBaseSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.workoutLogPath)
           .onChange(async (value) => {
             this.plugin.settings.workoutLogPath = normalizePath(value);
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName("Show schedule placeholder")
-      .setDesc("Keep a disabled schedule panel visible until calendar support is implemented.")
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.plugin.settings.showSchedulePlaceholder)
-          .onChange(async (value) => {
-            this.plugin.settings.showSchedulePlaceholder = value;
             await this.plugin.saveSettings();
           });
       });

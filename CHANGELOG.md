@@ -2,19 +2,14 @@
 
 This file records the main product and code changes for Home Base.
 
-## v2.3 - Faster Todo Capture
+## v3 - Calendar v1
 
-- Added a Quick Add input at the top of the Todo Manager panel.
-- Added `Enter`-to-create todo capture without opening the full modal.
-- Parsed lightweight inline syntax:
-  - `today`
-  - `tomorrow`
-  - `YYYY-MM-DD`
-  - Markdown tags such as `#school`
-  - priority markers `!high`, `!medium`, and `!low`
-- Saved Quick Add todos to `Home Base/Todo Inbox.md` using the existing Markdown todo format.
-- Kept the existing `New Todo` modal as the detailed editing entry point.
-- Updated plugin version to `0.2.3`.
+- Replaced the Schedule placeholder with a real Calendar dashboard panel.
+- Added iCloud/CalDAV settings for server URL, Apple ID username, app-specific password, default calendar URL, and calendar name.
+- Added CalDAV sync support for discovering calendars, fetching Today and Next 7 Days, creating events, editing events, and deleting events.
+- Added event editing UI with title, date, start/end time, all-day mode, location, and notes.
+- Used ETag checks for event updates and deletes so Home Base warns when an event changed remotely.
+- Updated plugin version to `0.3.0`.
 
 ## v2.2 - Load Stability Upgrade
 
@@ -65,3 +60,13 @@ This file records the main product and code changes for Home Base.
   - unresolved workout prompt
 - Added basic settings for file paths and startup behavior.
 
+## Planned: v2.3 - Faster Todo Capture
+
+- Improve todo creation to feel closer to Apple Reminders.
+- Add a Quick Add input directly inside the Todo Manager panel.
+- Support pressing `Enter` to create a todo without opening a modal.
+- Parse lightweight inline syntax such as:
+  - `Finish essay tomorrow #school !high`
+  - `Review notes today #study`
+  - `Pay rent 2026-06-30 #life !high`
+- Keep the existing full edit modal for detailed editing.
