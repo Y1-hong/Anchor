@@ -1,6 +1,6 @@
 {
   "name": "home-base",
-  "version": "0.3.0",
+  "version": "2.3",
   "description": "A personal Obsidian dashboard plugin.",
   "main": "main.js",
   "scripts": {

@@ -906,7 +906,7 @@ export default class HomeBasePlugin extends Plugin {
 
     try {
       const calendar = await this.getDefaultCalendar();
-      if (!calendar) return { events: [], error: "No writable CalDAV calendar was found.", setupRequired: false };
+      if (!calendar) return { events: [], error: "No CalDAV event calendar was found.", setupRequired: false };
 
       const body = `<?xml version="1.0" encoding="utf-8" ?>
 <c:calendar-query xmlns:d="${DAV_NS}" xmlns:c="${CALDAV_NS}">
@@ -982,22 +982,32 @@ export default class HomeBasePlugin extends Plugin {
   }
 
   async testCalendarConnection() {
-    const calendar = await this.getDefaultCalendar(true);
-    if (!calendar) throw new Error("No calendar was found for this CalDAV account.");
+    if (!this.hasCalendarCredentials()) {
+      throw new Error("Fill in the CalDAV server URL, Apple ID email, and app-specific password first.");
+    }
+
+    const calendar = await this.getDefaultCalendar(true, true);
+    if (!calendar) throw new Error("No event calendar was found for this CalDAV account.");
     return calendar;
   }
 
-  private hasCalendarConfig() {
+  private hasCalendarCredentials() {
     return Boolean(
-      this.settings.calendarEnabled &&
       this.settings.calendarServerUrl.trim() &&
       this.settings.calendarUsername.trim() &&
       this.settings.calendarPassword.trim()
     );
   }
 
-  private async getDefaultCalendar(forceDiscovery = false): Promise<CalendarInfo | null> {
-    if (!this.hasCalendarConfig()) return null;
+  private hasCalendarConfig() {
+    return Boolean(
+      this.settings.calendarEnabled &&
+      this.hasCalendarCredentials()
+    );
+  }
+
+  private async getDefaultCalendar(forceDiscovery = false, allowDisabled = false): Promise<CalendarInfo | null> {
+    if (allowDisabled ? !this.hasCalendarCredentials() : !this.hasCalendarConfig()) return null;
 
     if (this.settings.calendarUrl.trim() && !forceDiscovery) {
       return {
@@ -1008,12 +1018,12 @@ export default class HomeBasePlugin extends Plugin {
     }
 
     const calendars = await this.discoverCalendars();
-    const preferred = calendars.find((calendar) => calendar.href === normalizeRemoteUrl(this.settings.calendarUrl)) ?? calendars[0];
+    const writableCalendars = calendars.filter((calendar) => calendar.writable);
+    const preferred =
+      calendars.find((calendar) => calendar.href === normalizeRemoteUrl(this.settings.calendarUrl)) ??
+      writableCalendars[0] ??
+      calendars[0];
     if (!preferred) return null;
-
-    if (!preferred.writable) {
-      throw new Error(`"${preferred.displayName}" appears to be read-only. Choose a writable iCloud calendar.`);
-    }
 
     this.settings.calendarUrl = preferred.href;
     this.settings.calendarName = preferred.displayName;
@@ -1091,8 +1101,7 @@ export default class HomeBasePlugin extends Plugin {
           writable
         };
       })
-      .filter((calendar): calendar is CalendarInfo => Boolean(calendar))
-      .filter((calendar) => calendar.writable);
+      .filter((calendar): calendar is CalendarInfo => Boolean(calendar));
   }
 
   private async caldavRequest(url: string, method: string, body = "", headers: Record<string, string> = {}) {
@@ -1110,6 +1119,9 @@ export default class HomeBasePlugin extends Plugin {
     if (response.status >= 400) {
       if (response.status === 401 || response.status === 403) {
         throw new Error("Calendar authentication failed. Check your Apple ID and app-specific password.");
+      }
+      if (response.status === 405) {
+        throw new Error("This calendar does not allow that sync action. Choose a normal writable iCloud calendar.");
       }
       if (response.status === 409 || response.status === 412) {
         throw new Error("This event changed remotely. Refresh Home Base and try again.");
@@ -2288,7 +2300,7 @@ class HomeBaseSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Default calendar URL")
-      .setDesc("Leave blank and use Test connection to auto-select the first writable event calendar.")
+      .setDesc("Leave blank and use Test connection to auto-select an event calendar.")
       .addText((text) => {
         text
           .setPlaceholder("https://caldav.icloud.com/...")
@@ -2314,7 +2326,7 @@ class HomeBaseSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Test calendar connection")
-      .setDesc("Discovers writable CalDAV event calendars and saves the first writable calendar when no default URL is set.")
+      .setDesc("Discovers CalDAV event calendars and prefers a writable calendar when iCloud reports permissions.")
       .addButton((button) => {
         button.setButtonText("Test");
         button.onClick(async () => {
