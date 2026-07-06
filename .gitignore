@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 *.map
+AGENTS.md
+Home_Base/
