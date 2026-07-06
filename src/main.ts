@@ -16,6 +16,7 @@ const VIEW_TYPE_HOME_BASE = "home-base-dashboard";
 
 type Priority = "high" | "medium" | "low" | "";
 type TodoGroup = "Overdue" | "Today" | "Tomorrow" | "Next 7 Days" | "No Due Date" | "Later";
+type RepeatFrequency = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
 
 interface HomeBaseSettings {
   openOnStartup: boolean;
@@ -71,6 +72,10 @@ interface CalendarEvent {
   allDay: boolean;
   location: string;
   notes: string;
+  repeat: RepeatFrequency;
+  repeatUntil: string;
+  exceptionDates: string[];
+  occurrenceStart?: Date;
   rawIcs: string;
   calendarName: string;
 }
@@ -93,6 +98,8 @@ interface CalendarEventDraft {
   allDay: boolean;
   location: string;
   notes: string;
+  repeat: RepeatFrequency;
+  repeatUntil: string;
 }
 
 const DEFAULT_SETTINGS: HomeBaseSettings = {
@@ -223,6 +230,15 @@ function formatIcsUtcDateTime(date: Date) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
 }
 
+function formatIcsLocalDateTime(date: Date) {
+  return `${formatIcsDate(date)}T${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}${String(date.getSeconds()).padStart(2, "0")}`;
+}
+
+function parseIcsDateKey(value: string, params: string) {
+  const parsed = parseIcsDateValue(value, params);
+  return parsed.allDay ? formatIcsDate(parsed.date) : formatIcsLocalDateTime(parsed.date);
+}
+
 function parseIcsDateValue(value: string, params: string) {
   const allDay = /VALUE=DATE/i.test(params) || /^\d{8}$/.test(value);
   if (/^\d{8}$/.test(value)) {
@@ -251,6 +267,30 @@ function parseIcsDateValue(value: string, params: string) {
 
 function addMinutes(date: Date, minutes: number) {
   return new Date(date.getTime() + minutes * 60_000);
+}
+
+function nextHalfHour(date: Date) {
+  const next = new Date(date);
+  next.setSeconds(0, 0);
+  const minutes = next.getMinutes();
+  if (minutes < 30) {
+    next.setMinutes(30);
+  } else {
+    next.setHours(next.getHours() + 1, 0, 0, 0);
+  }
+  return next;
+}
+
+function addMonthsToDate(date: Date, months: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+
+function addYearsToDate(date: Date, years: number) {
+  const next = new Date(date);
+  next.setFullYear(next.getFullYear() + years);
+  return next;
 }
 
 function makeEventDate(date: string, time: string) {
@@ -292,13 +332,30 @@ function buildIcsEventLines(draft: CalendarEventDraft, uid: string) {
     lines.push(`DTSTART;VALUE=DATE:${formatIcsDate(start)}`);
     lines.push(`DTEND;VALUE=DATE:${formatIcsDate(end)}`);
   } else {
-    lines.push(`DTSTART:${formatIcsUtcDateTime(start)}`);
-    lines.push(`DTEND:${formatIcsUtcDateTime(end)}`);
+    lines.push(`DTSTART:${formatIcsLocalDateTime(start)}`);
+    lines.push(`DTEND:${formatIcsLocalDateTime(end)}`);
   }
 
   if (draft.location.trim()) lines.push(`LOCATION:${escapeIcsText(draft.location.trim())}`);
   if (draft.notes.trim()) lines.push(`DESCRIPTION:${escapeIcsText(draft.notes.trim())}`);
+  const rrule = formatRepeatRule(draft);
+  if (rrule) lines.push(`RRULE:${rrule}`);
   return lines;
+}
+
+function formatRepeatRule(draft: CalendarEventDraft) {
+  if (draft.repeat === "none") return "";
+  const parts: string[] = [];
+  if (draft.repeat === "daily") parts.push("FREQ=DAILY");
+  if (draft.repeat === "weekdays") parts.push("FREQ=WEEKLY", "BYDAY=MO,TU,WE,TH,FR");
+  if (draft.repeat === "weekly") parts.push("FREQ=WEEKLY");
+  if (draft.repeat === "monthly") parts.push("FREQ=MONTHLY");
+  if (draft.repeat === "yearly") parts.push("FREQ=YEARLY");
+  if (draft.repeatUntil) {
+    const until = draft.allDay ? `${draft.repeatUntil.replace(/-/g, "")}` : formatIcsLocalDateTime(makeEventDate(draft.repeatUntil, draft.endTime || "23:59"));
+    parts.push(`UNTIL=${until}`);
+  }
+  return parts.join(";");
 }
 
 function buildNewIcsEvent(draft: CalendarEventDraft, uid: string) {
@@ -323,7 +380,7 @@ function updateExistingIcsEvent(rawIcs: string, draft: CalendarEventDraft, uid: 
   if (begin === -1 || end === -1) return buildNewIcsEvent(draft, uid);
 
   const replacement = buildIcsEventLines(draft, uid);
-  const replacedNames = new Set(["UID", "DTSTAMP", "LAST-MODIFIED", "SUMMARY", "DTSTART", "DTEND", "LOCATION", "DESCRIPTION"]);
+  const replacedNames = new Set(["UID", "DTSTAMP", "LAST-MODIFIED", "SUMMARY", "DTSTART", "DTEND", "LOCATION", "DESCRIPTION", "RRULE"]);
   const nextLines = [
     ...lines.slice(0, begin + 1),
     ...replacement,
@@ -346,6 +403,7 @@ function parseCalendarEvent(rawIcs: string, href: string, etag: string, calendar
     .map(parseIcsProperty)
     .filter((property): property is NonNullable<ReturnType<typeof parseIcsProperty>> => Boolean(property));
   const find = (name: string) => properties.find((property) => property.name === name);
+  const all = (name: string) => properties.filter((property) => property.name === name);
   const uid = find("UID")?.value || href.split("/").pop()?.replace(/\.ics$/i, "") || crypto.randomUUID();
   const startProperty = find("DTSTART");
   if (!startProperty) return null;
@@ -355,6 +413,11 @@ function parseCalendarEvent(rawIcs: string, href: string, etag: string, calendar
     date: parsedStart.allDay ? addDaysToDate(parsedStart.date, 1) : addMinutes(parsedStart.date, 60),
     allDay: parsedStart.allDay
   };
+
+  const repeatInfo = parseRepeatRule(find("RRULE")?.value ?? "");
+  const exceptionDates = all("EXDATE").flatMap((property) => {
+    return property.value.split(",").map((value) => parseIcsDateKey(value, property.params));
+  });
 
   return {
     uid,
@@ -366,9 +429,72 @@ function parseCalendarEvent(rawIcs: string, href: string, etag: string, calendar
     allDay: parsedStart.allDay,
     location: unescapeIcsText(find("LOCATION")?.value ?? ""),
     notes: unescapeIcsText(find("DESCRIPTION")?.value ?? ""),
+    repeat: repeatInfo.repeat,
+    repeatUntil: repeatInfo.repeatUntil,
+    exceptionDates,
     rawIcs,
     calendarName
   };
+}
+
+function parseRepeatRule(value: string): { repeat: RepeatFrequency; repeatUntil: string } {
+  if (!value) return { repeat: "none", repeatUntil: "" };
+  const parts = Object.fromEntries(value.split(";").map((part) => {
+    const [key, ruleValue = ""] = part.split("=");
+    return [key.toUpperCase(), ruleValue.toUpperCase()];
+  }));
+  let repeat: RepeatFrequency = "none";
+  if (parts.FREQ === "DAILY") repeat = "daily";
+  if (parts.FREQ === "WEEKLY" && parts.BYDAY === "MO,TU,WE,TH,FR") repeat = "weekdays";
+  else if (parts.FREQ === "WEEKLY") repeat = "weekly";
+  if (parts.FREQ === "MONTHLY") repeat = "monthly";
+  if (parts.FREQ === "YEARLY") repeat = "yearly";
+  return { repeat, repeatUntil: parts.UNTIL ? `${parts.UNTIL.slice(0, 4)}-${parts.UNTIL.slice(4, 6)}-${parts.UNTIL.slice(6, 8)}` : "" };
+}
+
+function occurrenceExceptionKey(event: CalendarEvent) {
+  const occurrenceStart = event.occurrenceStart ?? event.start;
+  return event.allDay ? formatIcsDate(occurrenceStart) : formatIcsLocalDateTime(occurrenceStart);
+}
+
+function addExceptionToIcs(rawIcs: string, event: CalendarEvent) {
+  const lines = unfoldIcsLines(rawIcs);
+  const end = lines.findIndex((line) => line.toUpperCase() === "END:VEVENT");
+  if (end === -1) return rawIcs;
+  const key = occurrenceExceptionKey(event);
+  if (event.exceptionDates.includes(key)) return rawIcs;
+  const exdate = event.allDay ? `EXDATE;VALUE=DATE:${key}` : `EXDATE:${key}`;
+  const nextLines = [...lines.slice(0, end), exdate, ...lines.slice(end)];
+  return `${nextLines.map(foldIcsLine).join("\r\n")}\r\n`;
+}
+
+function expandCalendarEvents(events: CalendarEvent[], start: Date, end: Date) {
+  return events.flatMap((event) => event.repeat === "none" ? [event] : expandRepeatingEvent(event, start, end));
+}
+
+function expandRepeatingEvent(event: CalendarEvent, rangeStart: Date, rangeEnd: Date) {
+  const duration = event.end.getTime() - event.start.getTime();
+  const until = event.repeatUntil ? addDaysToDate(new Date(`${event.repeatUntil}T00:00:00`), 1) : rangeEnd;
+  const events: CalendarEvent[] = [];
+  let cursor = new Date(event.start);
+  let guard = 0;
+
+  while (cursor < rangeEnd && cursor < until && guard < 500) {
+    guard += 1;
+    const nextEnd = new Date(cursor.getTime() + duration);
+    const key = event.allDay ? formatIcsDate(cursor) : formatIcsLocalDateTime(cursor);
+    const isWeekday = cursor.getDay() >= 1 && cursor.getDay() <= 5;
+    if (nextEnd >= rangeStart && cursor < rangeEnd && !event.exceptionDates.includes(key) && (event.repeat !== "weekdays" || isWeekday)) {
+      events.push({ ...event, start: new Date(cursor), end: nextEnd, occurrenceStart: new Date(cursor) });
+    }
+    if (event.repeat === "daily" || event.repeat === "weekdays") cursor = addDaysToDate(cursor, 1);
+    else if (event.repeat === "weekly") cursor = addDaysToDate(cursor, 7);
+    else if (event.repeat === "monthly") cursor = addMonthsToDate(cursor, 1);
+    else if (event.repeat === "yearly") cursor = addYearsToDate(cursor, 1);
+    else break;
+  }
+
+  return events;
 }
 
 function getElementsByLocalName(parent: Document | Element, localName: string): Element[] {
@@ -924,7 +1050,7 @@ export default class HomeBasePlugin extends Plugin {
 </c:calendar-query>`;
       const response = await this.caldavRequest(calendar.href, "REPORT", body, { Depth: "1" });
       const document = parseXml(response.text);
-      const events = getElementsByLocalName(document, "response")
+      const events = expandCalendarEvents(getElementsByLocalName(document, "response")
         .map((element) => {
           const href = resolveRemoteUrl(calendar.href, firstTextByLocalName(element, "href"));
           const etag = firstTextByLocalName(element, "getetag");
@@ -932,7 +1058,7 @@ export default class HomeBasePlugin extends Plugin {
           if (!calendarData) return null;
           return parseCalendarEvent(calendarData, href, etag, calendar.displayName);
         })
-        .filter((event): event is CalendarEvent => Boolean(event))
+        .filter((event): event is CalendarEvent => Boolean(event)), start, end)
         .filter((event) => event.end >= start && event.start < end)
         .sort((a, b) => a.start.getTime() - b.start.getTime());
 
@@ -971,14 +1097,40 @@ export default class HomeBasePlugin extends Plugin {
     }
   }
 
-  async deleteCalendarEvent(event: CalendarEvent) {
+  async saveCalendarOccurrence(event: CalendarEvent, draft: CalendarEventDraft) {
+    await this.excludeCalendarOccurrence(event);
+    await this.saveCalendarEvent({
+      ...draft,
+      uid: undefined,
+      href: undefined,
+      etag: undefined,
+      rawIcs: undefined,
+      repeat: "none",
+      repeatUntil: ""
+    });
+  }
+
+  async deleteCalendarEvent(event: CalendarEvent, occurrenceOnly = false) {
     try {
+      if (occurrenceOnly && event.repeat !== "none") {
+        await this.excludeCalendarOccurrence(event);
+        new Notice("Calendar occurrence deleted.");
+        return;
+      }
       await this.caldavRequest(event.href, "DELETE", "", event.etag ? { "If-Match": event.etag } : {});
       new Notice("Calendar event deleted.");
     } catch (error) {
       new Notice(this.readableCalendarError(error));
       throw error;
     }
+  }
+
+  private async excludeCalendarOccurrence(event: CalendarEvent) {
+    const ics = addExceptionToIcs(event.rawIcs, event);
+    await this.caldavRequest(event.href, "PUT", ics, {
+      "Content-Type": "text/calendar; charset=utf-8",
+      ...(event.etag ? { "If-Match": event.etag } : {})
+    });
   }
 
   async testCalendarConnection() {
@@ -1327,6 +1479,9 @@ class HomeBaseView extends ItemView {
     if (event.location) {
       meta.createEl("span", { text: event.location });
     }
+    if (event.repeat !== "none") {
+      meta.createEl("span", { text: this.formatRepeatLabel(event.repeat) });
+    }
 
     const actions = item.createDiv({ cls: "home-base-actions" });
     const edit = actions.createEl("button", { cls: "home-base-ghost-button", text: "Edit" });
@@ -1335,7 +1490,8 @@ class HomeBaseView extends ItemView {
     remove.onClickEvent(async () => {
       const confirmed = confirm(`Delete "${event.title || "Untitled event"}"?`);
       if (!confirmed) return;
-      await this.plugin.deleteCalendarEvent(event);
+      const occurrenceOnly = event.repeat !== "none" && confirm("Delete only this event? Press Cancel to delete the whole repeating series.");
+      await this.plugin.deleteCalendarEvent(event, occurrenceOnly);
       await this.render();
     });
   }
@@ -1680,6 +1836,18 @@ class HomeBaseView extends ItemView {
     return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   }
 
+  private formatRepeatLabel(repeat: RepeatFrequency) {
+    const labels: Record<RepeatFrequency, string> = {
+      none: "",
+      daily: "Repeats daily",
+      weekdays: "Repeats weekdays",
+      weekly: "Repeats weekly",
+      monthly: "Repeats monthly",
+      yearly: "Repeats yearly"
+    };
+    return labels[repeat];
+  }
+
   private getGreeting() {
     const hour = new Date().getHours();
     if (hour < 12) return "Good morning";
@@ -1849,6 +2017,10 @@ class CalendarEventModal extends Modal {
   private allDayValue = false;
   private locationValue = "";
   private notesValue = "";
+  private repeatValue: RepeatFrequency = "none";
+  private repeatUntilValue = "";
+  private durationMinutes = 60;
+  private endTimeInput?: HTMLInputElement;
 
   constructor(app: App, plugin: HomeBasePlugin, event: CalendarEvent | undefined, onSave: () => void) {
     super(app);
@@ -1864,9 +2036,15 @@ class CalendarEventModal extends Modal {
       this.allDayValue = event.allDay;
       this.locationValue = event.location;
       this.notesValue = event.notes;
+      this.repeatValue = event.repeat;
+      this.repeatUntilValue = event.repeatUntil;
+      this.durationMinutes = Math.max(1, Math.round((event.end.getTime() - event.start.getTime()) / 60_000));
     } else {
-      const now = new Date();
-      this.dateValue = this.dateInputValue(now);
+      const start = nextHalfHour(new Date());
+      const end = addMinutes(start, this.durationMinutes);
+      this.dateValue = this.dateInputValue(start);
+      this.startTimeValue = this.timeInputValue(start);
+      this.endTimeValue = this.timeInputValue(end);
     }
   }
 
@@ -1917,6 +2095,7 @@ class CalendarEventModal extends Modal {
           text.setValue(this.startTimeValue);
           text.onChange((value) => {
             this.startTimeValue = value;
+            this.followStartTime();
           });
         });
 
@@ -1924,9 +2103,42 @@ class CalendarEventModal extends Modal {
         .setName("End time")
         .addText((text) => {
           text.inputEl.type = "time";
+          this.endTimeInput = text.inputEl;
           text.setValue(this.endTimeValue);
           text.onChange((value) => {
             this.endTimeValue = value;
+            this.updateDurationFromEnd();
+          });
+        });
+    }
+
+    new Setting(contentEl)
+      .setName("Repeat")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("none", "Never")
+          .addOption("daily", "Every day")
+          .addOption("weekdays", "Every weekday")
+          .addOption("weekly", "Every week")
+          .addOption("monthly", "Every month")
+          .addOption("yearly", "Every year")
+          .setValue(this.repeatValue)
+          .onChange((value) => {
+            this.repeatValue = value as RepeatFrequency;
+            if (this.repeatValue === "none") this.repeatUntilValue = "";
+            this.render();
+          });
+      });
+
+    if (this.repeatValue !== "none") {
+      new Setting(contentEl)
+        .setName("Repeat until")
+        .setDesc("Optional")
+        .addText((text) => {
+          text.inputEl.type = "date";
+          text.setValue(this.repeatUntilValue);
+          text.onChange((value) => {
+            this.repeatUntilValue = value;
           });
         });
     }
@@ -1969,6 +2181,7 @@ class CalendarEventModal extends Modal {
       new Notice("Event date is required.");
       return;
     }
+    this.ensureEndAfterStart(false);
 
     const draft: CalendarEventDraft = {
       uid: this.event?.uid,
@@ -1981,10 +2194,21 @@ class CalendarEventModal extends Modal {
       endTime: this.endTimeValue,
       allDay: this.allDayValue,
       location: this.locationValue,
-      notes: this.notesValue
+      notes: this.notesValue,
+      repeat: this.repeatValue,
+      repeatUntil: this.repeatUntilValue
     };
 
-    await this.plugin.saveCalendarEvent(draft);
+    if (this.event?.repeat && this.event.repeat !== "none") {
+      const onlyThis = confirm("Edit only this event? Press Cancel to edit the whole repeating series.");
+      if (onlyThis) {
+        await this.plugin.saveCalendarOccurrence(this.event, draft);
+      } else {
+        await this.plugin.saveCalendarEvent(draft);
+      }
+    } else {
+      await this.plugin.saveCalendarEvent(draft);
+    }
     this.close();
     this.onSave();
   }
@@ -1993,9 +2217,41 @@ class CalendarEventModal extends Modal {
     if (!this.event) return;
     const confirmed = confirm(`Delete "${this.event.title || "Untitled event"}"?`);
     if (!confirmed) return;
-    await this.plugin.deleteCalendarEvent(this.event);
+    const occurrenceOnly = this.event.repeat !== "none" && confirm("Delete only this event? Press Cancel to delete the whole repeating series.");
+    await this.plugin.deleteCalendarEvent(this.event, occurrenceOnly);
     this.close();
     this.onSave();
+  }
+
+  private ensureEndAfterStart(silent: boolean) {
+    if (this.allDayValue || !this.dateValue || !this.startTimeValue || !this.endTimeValue) return;
+    const start = makeEventDate(this.dateValue, this.startTimeValue);
+    const end = makeEventDate(this.dateValue, this.endTimeValue);
+    if (end > start) return;
+    const next = addMinutes(start, Math.max(this.durationMinutes, 60));
+    this.endTimeValue = this.timeInputValue(next);
+    if (this.endTimeInput) this.endTimeInput.value = this.endTimeValue;
+    if (!silent) new Notice("End time was adjusted to be after the start time.");
+  }
+
+  private followStartTime() {
+    if (this.allDayValue || !this.dateValue || !this.startTimeValue) return;
+    const start = makeEventDate(this.dateValue, this.startTimeValue);
+    const end = addMinutes(start, Math.max(this.durationMinutes, 1));
+    this.endTimeValue = this.timeInputValue(end);
+    if (this.endTimeInput) this.endTimeInput.value = this.endTimeValue;
+  }
+
+  private updateDurationFromEnd() {
+    if (this.allDayValue || !this.dateValue || !this.startTimeValue || !this.endTimeValue) return;
+    const start = makeEventDate(this.dateValue, this.startTimeValue);
+    const end = makeEventDate(this.dateValue, this.endTimeValue);
+    if (end <= start) {
+      this.durationMinutes = 60;
+      this.ensureEndAfterStart(false);
+      return;
+    }
+    this.durationMinutes = Math.max(1, Math.round((end.getTime() - start.getTime()) / 60_000));
   }
 
   private dateInputValue(date: Date) {

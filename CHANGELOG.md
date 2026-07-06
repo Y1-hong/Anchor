@@ -2,6 +2,12 @@
 
 This file records the main product and code changes for Home Base.
 
+## v2.4 - Improve Create Event Logic
+
+- Improved new calendar event defaults so start times use the next half-hour and end times stay one hour later by default.
+- Updated event time editing so the end time follows start-time changes and invalid end times are corrected.
+- Preserved repeat options and local-time ICS event output for CalDAV calendars.
+
 ## v3 - Calendar v1
 
 - Replaced the Schedule placeholder with a real Calendar dashboard panel.
