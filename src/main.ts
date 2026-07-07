@@ -9,7 +9,8 @@ import {
   TFile,
   WorkspaceLeaf,
   normalizePath,
-  requestUrl
+  requestUrl,
+  setIcon
 } from "obsidian";
 
 const VIEW_TYPE_HOME_BASE = "home-base-dashboard";
@@ -17,6 +18,7 @@ const VIEW_TYPE_HOME_BASE = "home-base-dashboard";
 type Priority = "high" | "medium" | "low" | "";
 type TodoGroup = "Overdue" | "Today" | "Tomorrow" | "Next 7 Days" | "No Due Date" | "Later";
 type RepeatFrequency = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
+type TimePickerKind = "start" | "end";
 
 interface HomeBaseSettings {
   openOnStartup: boolean;
@@ -841,6 +843,159 @@ const HOME_BASE_STYLES = `
 
 .home-base-modal .setting-item {
   border-top: 0;
+}
+
+.home-base-time-setting .setting-item-control {
+  flex: 1;
+}
+
+.home-base-time-field {
+  position: relative;
+  width: min(260px, 100%);
+}
+
+.home-base-time-input-wrap {
+  position: relative;
+}
+
+.home-base-time-input {
+  width: 100%;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+.home-base-time-icon {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.home-base-time-popover {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 100;
+  display: grid;
+  grid-template-columns: 88px 1px 88px 1px 76px;
+  align-items: stretch;
+  width: 254px;
+  padding: 14px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-primary);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.18);
+}
+
+.home-base-time-popover.is-above {
+  top: auto;
+  bottom: calc(100% + 12px);
+}
+
+.home-base-time-popover::before {
+  position: absolute;
+  top: -7px;
+  left: var(--home-base-time-pointer-left, 28px);
+  width: 14px;
+  height: 14px;
+  border-top: 1px solid var(--background-modifier-border);
+  border-left: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  content: "";
+  transform: rotate(45deg);
+}
+
+.home-base-time-popover.is-above::before {
+  top: auto;
+  bottom: -7px;
+  border: 0;
+  border-right: 1px solid var(--background-modifier-border);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.home-base-time-column,
+.home-base-period-column {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.home-base-time-column {
+  flex-direction: column;
+  gap: 7px;
+  touch-action: none;
+}
+
+.home-base-time-value {
+  min-width: 54px;
+  color: var(--text-normal);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.home-base-time-step,
+.home-base-period-button {
+  border: 0;
+  box-shadow: none;
+}
+
+.home-base-time-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.home-base-time-step:hover,
+.home-base-time-step:focus-visible {
+  color: var(--text-normal);
+  background: var(--background-secondary);
+}
+
+.home-base-time-divider {
+  width: 1px;
+  min-height: 110px;
+  background: var(--background-modifier-border);
+}
+
+.home-base-period-column {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.home-base-period-button {
+  min-width: 46px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  color: var(--text-muted);
+  background: transparent;
+  font-weight: 700;
+}
+
+.home-base-period-button.is-selected {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
+.home-base-time-input:focus-visible,
+.home-base-time-step:focus-visible,
+.home-base-period-button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
 }
 
 .home-base-routine-modal {
@@ -2020,7 +2175,26 @@ class CalendarEventModal extends Modal {
   private repeatValue: RepeatFrequency = "none";
   private repeatUntilValue = "";
   private durationMinutes = 60;
+  private activeTimePicker: TimePickerKind | null = null;
+  private activeTimeField?: HTMLElement;
+  private activeTimeInput?: HTMLInputElement;
+  private timePickerPopover?: HTMLElement;
+  private startTimeInput?: HTMLInputElement;
   private endTimeInput?: HTMLInputElement;
+  private timeWheelDeltas = new WeakMap<HTMLElement, number>();
+  private outsideTimePickerHandler = (event: MouseEvent) => {
+    const target = event.target as Node | null;
+    if (!target) return;
+    if (this.timePickerPopover?.contains(target) || this.activeTimeField?.contains(target)) return;
+    this.closeTimePicker();
+  };
+  private timePickerKeyHandler = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || !this.activeTimePicker) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.closeTimePicker(true);
+  };
+  private timePickerResizeHandler = () => this.positionTimePicker();
 
   constructor(app: App, plugin: HomeBasePlugin, event: CalendarEvent | undefined, onSave: () => void) {
     super(app);
@@ -2052,7 +2226,12 @@ class CalendarEventModal extends Modal {
     this.render();
   }
 
+  onClose() {
+    this.closeTimePicker();
+  }
+
   private render() {
+    this.closeTimePicker();
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("home-base-modal");
@@ -2088,28 +2267,8 @@ class CalendarEventModal extends Modal {
       });
 
     if (!this.allDayValue) {
-      new Setting(contentEl)
-        .setName("Start time")
-        .addText((text) => {
-          text.inputEl.type = "time";
-          text.setValue(this.startTimeValue);
-          text.onChange((value) => {
-            this.startTimeValue = value;
-            this.followStartTime();
-          });
-        });
-
-      new Setting(contentEl)
-        .setName("End time")
-        .addText((text) => {
-          text.inputEl.type = "time";
-          this.endTimeInput = text.inputEl;
-          text.setValue(this.endTimeValue);
-          text.onChange((value) => {
-            this.endTimeValue = value;
-            this.updateDurationFromEnd();
-          });
-        });
+      this.renderTimeSetting(contentEl, "Start time", "start");
+      this.renderTimeSetting(contentEl, "End time", "end");
     }
 
     new Setting(contentEl)
@@ -2172,6 +2331,242 @@ class CalendarEventModal extends Modal {
     save.onClickEvent(() => void this.saveEvent());
   }
 
+  private renderTimeSetting(parent: HTMLElement, label: string, kind: TimePickerKind) {
+    const setting = new Setting(parent).setName(label);
+    setting.settingEl.addClass("home-base-time-setting");
+    const field = setting.controlEl.createDiv({ cls: "home-base-time-field" });
+    const wrap = field.createDiv({ cls: "home-base-time-input-wrap" });
+    const input = wrap.createEl("input", {
+      cls: "home-base-time-input",
+      attr: {
+        type: "text",
+        readonly: "true",
+        "aria-haspopup": "dialog",
+        "aria-expanded": "false",
+        "aria-label": `${label}: ${this.formatDisplayTime(this.timeValueFor(kind))}. Open time picker.`
+      }
+    });
+    input.value = this.formatDisplayTime(this.timeValueFor(kind));
+    const icon = wrap.createSpan({ cls: "home-base-time-icon" });
+    setIcon(icon, "clock");
+
+    input.addEventListener("click", (event) => {
+      event.preventDefault();
+      this.openTimePicker(kind, field, input);
+    });
+    input.addEventListener("focus", () => this.openTimePicker(kind, field, input));
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " " && event.key !== "ArrowDown") return;
+      event.preventDefault();
+      this.openTimePicker(kind, field, input);
+      this.timePickerPopover?.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+
+    if (kind === "start") this.startTimeInput = input;
+    else this.endTimeInput = input;
+  }
+
+  private openTimePicker(kind: TimePickerKind, field: HTMLElement, input: HTMLInputElement) {
+    if (this.activeTimePicker === kind && this.timePickerPopover) {
+      this.positionTimePicker();
+      return;
+    }
+    this.closeTimePicker();
+    this.activeTimePicker = kind;
+    this.activeTimeField = field;
+    this.activeTimeInput = input;
+    input.setAttribute("aria-expanded", "true");
+    const popover = field.createDiv({ cls: "home-base-time-popover" });
+    popover.setAttribute("role", "dialog");
+    popover.setAttribute("aria-label", `${kind === "start" ? "Start" : "End"} time picker`);
+    this.timePickerPopover = popover;
+    this.renderTimePickerContents();
+    this.positionTimePicker();
+    document.addEventListener("mousedown", this.outsideTimePickerHandler, true);
+    document.addEventListener("keydown", this.timePickerKeyHandler, true);
+    window.addEventListener("resize", this.timePickerResizeHandler);
+  }
+
+  private closeTimePicker(focusInput = false) {
+    const input = this.activeTimeInput;
+    if (this.timePickerPopover) this.timePickerPopover.remove();
+    this.timePickerPopover = undefined;
+    this.activeTimeField = undefined;
+    this.activeTimeInput = undefined;
+    this.activeTimePicker = null;
+    if (input) input.setAttribute("aria-expanded", "false");
+    document.removeEventListener("mousedown", this.outsideTimePickerHandler, true);
+    document.removeEventListener("keydown", this.timePickerKeyHandler, true);
+    window.removeEventListener("resize", this.timePickerResizeHandler);
+    if (focusInput) input?.focus();
+  }
+
+  private renderTimePickerContents() {
+    if (!this.timePickerPopover || !this.activeTimePicker) return;
+    const popover = this.timePickerPopover;
+    const kind = this.activeTimePicker;
+    const parts = this.parseTimeParts(this.timeValueFor(kind));
+    popover.empty();
+    this.renderTimeColumn(popover, kind, "hour", parts.hour12);
+    popover.createDiv({ cls: "home-base-time-divider" });
+    this.renderTimeColumn(popover, kind, "minute", String(parts.minute).padStart(2, "0"));
+    popover.createDiv({ cls: "home-base-time-divider" });
+    const period = popover.createDiv({ cls: "home-base-period-column" });
+    this.renderPeriodButton(period, kind, "AM", parts.period);
+    this.renderPeriodButton(period, kind, "PM", parts.period);
+  }
+
+  private renderTimeColumn(parent: HTMLElement, kind: TimePickerKind, unit: "hour" | "minute", value: string | number) {
+    const labelUnit = unit === "hour" ? "hour" : "minute";
+    const column = parent.createDiv({ cls: "home-base-time-column" });
+    column.addEventListener("wheel", (event) => this.handleTimeColumnWheel(event, column, kind, unit), { passive: false });
+    const up = column.createEl("button", { cls: "home-base-time-step", attr: { "aria-label": `Decrease ${kind} ${labelUnit}` } });
+    setIcon(up, "chevron-up");
+    up.onClickEvent(() => this.adjustTime(kind, unit, -1));
+    column.createDiv({ cls: "home-base-time-value", text: String(value) });
+    const down = column.createEl("button", { cls: "home-base-time-step", attr: { "aria-label": `Increase ${kind} ${labelUnit}` } });
+    setIcon(down, "chevron-down");
+    down.onClickEvent(() => this.adjustTime(kind, unit, 1));
+  }
+
+  private handleTimeColumnWheel(event: WheelEvent, column: HTMLElement, kind: TimePickerKind, unit: "hour" | "minute") {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const wheelDelta = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaY;
+    const accumulated = (this.timeWheelDeltas.get(column) ?? 0) + wheelDelta;
+    const direction = accumulated > 0 ? 1 : -1;
+    const threshold = this.timeWheelThreshold(kind, unit, direction);
+    if (Math.abs(accumulated) < threshold) {
+      this.timeWheelDeltas.set(column, accumulated);
+      return;
+    }
+
+    this.adjustWheelTime(kind, unit, direction);
+    this.timeWheelDeltas.set(column, accumulated - Math.sign(accumulated) * threshold);
+  }
+
+  private timeWheelThreshold(kind: TimePickerKind, unit: "hour" | "minute", direction: 1 | -1) {
+    if (unit !== "minute") return 24;
+    const { minute } = this.parseTimeParts(this.timeValueFor(kind));
+    return (minute === 0 || minute === 30) ? 42 : 18;
+  }
+
+  private adjustWheelTime(kind: TimePickerKind, unit: "hour" | "minute", direction: 1 | -1) {
+    const parts = this.parseTimeParts(this.timeValueFor(kind));
+    const hour12 = parts.hour12;
+    const nextHour12 = unit === "hour" ? this.wrapNumber(hour12 + direction, 1, 12) : hour12;
+    const nextMinute = unit === "minute" ? this.wrapNumber(parts.minute + direction, 0, 59) : parts.minute;
+    const hour24 = parts.period === "AM"
+      ? nextHour12 % 12
+      : (nextHour12 % 12) + 12;
+    this.applyTimeValue(kind, `${String(hour24).padStart(2, "0")}:${String(nextMinute).padStart(2, "0")}`);
+  }
+
+  private wrapNumber(value: number, min: number, max: number) {
+    if (value > max) return min;
+    if (value < min) return max;
+    return value;
+  }
+
+  private renderPeriodButton(parent: HTMLElement, kind: TimePickerKind, period: "AM" | "PM", selected: "AM" | "PM") {
+    const button = parent.createEl("button", {
+      cls: `home-base-period-button${period === selected ? " is-selected" : ""}`,
+      text: period,
+      attr: {
+        "aria-label": `Set ${kind} time to ${period}`,
+        "aria-pressed": period === selected ? "true" : "false"
+      }
+    });
+    button.onClickEvent(() => this.setTimePeriod(kind, period));
+  }
+
+  private positionTimePicker() {
+    if (!this.timePickerPopover || !this.activeTimeField || !this.activeTimeInput) return;
+    const popover = this.timePickerPopover;
+    popover.style.left = "0px";
+    popover.style.removeProperty("--home-base-time-pointer-left");
+    popover.removeClass("is-above");
+
+    const fieldRect = this.activeTimeField.getBoundingClientRect();
+    const inputRect = this.activeTimeInput.getBoundingClientRect();
+    const popoverRect = popover.getBoundingClientRect();
+    const modalRect = this.contentEl.getBoundingClientRect();
+    const margin = 12;
+    const boundaryLeft = Math.max(margin, modalRect.left + margin);
+    const boundaryRight = Math.min(window.innerWidth - margin, modalRect.right - margin);
+    const minLeft = boundaryLeft - fieldRect.left;
+    const maxLeft = boundaryRight - fieldRect.left - popoverRect.width;
+    const lowerLeft = Math.min(minLeft, maxLeft);
+    const upperLeft = Math.max(minLeft, maxLeft);
+    const desiredLeft = Math.min(Math.max(0, lowerLeft), upperLeft);
+    popover.style.left = `${desiredLeft}px`;
+
+    const pointerLeft = inputRect.left + Math.min(32, inputRect.width / 2) - fieldRect.left - desiredLeft;
+    popover.style.setProperty("--home-base-time-pointer-left", `${Math.max(16, Math.min(popoverRect.width - 22, pointerLeft))}px`);
+
+    const nextRect = popover.getBoundingClientRect();
+    if (nextRect.bottom > window.innerHeight - margin && inputRect.top - nextRect.height - margin > 0) {
+      popover.addClass("is-above");
+    }
+  }
+
+  private adjustTime(kind: TimePickerKind, unit: "hour" | "minute", direction: 1 | -1) {
+    const parts = this.parseTimeParts(this.timeValueFor(kind));
+    const date = new Date(2000, 0, 1, parts.hour24, parts.minute, 0, 0);
+    const next = unit === "hour" ? addMinutes(date, direction * 60) : addMinutes(date, direction * 30);
+    this.applyTimeValue(kind, this.timeInputValue(next));
+  }
+
+  private setTimePeriod(kind: TimePickerKind, period: "AM" | "PM") {
+    const parts = this.parseTimeParts(this.timeValueFor(kind));
+    if (parts.period === period) return;
+    const hour24 = period === "AM" ? parts.hour24 - 12 : parts.hour24 + 12;
+    this.applyTimeValue(kind, `${String(hour24).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`);
+  }
+
+  private applyTimeValue(kind: TimePickerKind, value: string) {
+    if (kind === "start") {
+      this.startTimeValue = value;
+      this.updateTimeInput(this.startTimeInput, value, "Start time");
+      this.followStartTime();
+    } else {
+      this.endTimeValue = value;
+      this.updateTimeInput(this.endTimeInput, value, "End time");
+      this.updateDurationFromEnd();
+    }
+    this.renderTimePickerContents();
+    this.positionTimePicker();
+  }
+
+  private updateTimeInput(input: HTMLInputElement | undefined, value: string, label: string) {
+    if (!input) return;
+    const display = this.formatDisplayTime(value);
+    input.value = display;
+    input.setAttribute("aria-label", `${label}: ${display}. Open time picker.`);
+  }
+
+  private timeValueFor(kind: TimePickerKind) {
+    return kind === "start" ? this.startTimeValue : this.endTimeValue;
+  }
+
+  private parseTimeParts(value: string) {
+    const [rawHour, rawMinute] = value.split(":").map((part) => Number(part));
+    const hour24 = Number.isFinite(rawHour) ? Math.min(23, Math.max(0, rawHour)) : 0;
+    const minute = Number.isFinite(rawMinute) ? Math.min(59, Math.max(0, rawMinute)) : 0;
+    return {
+      hour24,
+      hour12: hour24 % 12 || 12,
+      minute,
+      period: hour24 >= 12 ? "PM" as const : "AM" as const
+    };
+  }
+
+  private formatDisplayTime(value: string) {
+    const parts = this.parseTimeParts(value);
+    return `${parts.hour12}:${String(parts.minute).padStart(2, "0")} ${parts.period}`;
+  }
+
   private async saveEvent() {
     if (!this.titleValue.trim()) {
       new Notice("Event title is required.");
@@ -2230,7 +2625,7 @@ class CalendarEventModal extends Modal {
     if (end > start) return;
     const next = addMinutes(start, Math.max(this.durationMinutes, 60));
     this.endTimeValue = this.timeInputValue(next);
-    if (this.endTimeInput) this.endTimeInput.value = this.endTimeValue;
+    this.updateTimeInput(this.endTimeInput, this.endTimeValue, "End time");
     if (!silent) new Notice("End time was adjusted to be after the start time.");
   }
 
@@ -2239,7 +2634,7 @@ class CalendarEventModal extends Modal {
     const start = makeEventDate(this.dateValue, this.startTimeValue);
     const end = addMinutes(start, Math.max(this.durationMinutes, 1));
     this.endTimeValue = this.timeInputValue(end);
-    if (this.endTimeInput) this.endTimeInput.value = this.endTimeValue;
+    this.updateTimeInput(this.endTimeInput, this.endTimeValue, "End time");
   }
 
   private updateDurationFromEnd() {

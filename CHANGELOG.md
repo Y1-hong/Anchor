@@ -2,6 +2,13 @@
 
 This file records the main product and code changes for Home Base.
 
+## v2.5 - Compact Create Event Time Picker
+
+- Replaced the native scrolling time fields in the Create Event modal with a compact popover picker.
+- Added hour and minute chevrons, AM/PM segmented selection, outside-click closing, Escape closing, and visible keyboard focus states.
+- Preserved start/end default timing, end-time follow behavior, repeat options, validation, and local-time CalDAV event output.
+- Version `2.5` is not tagged; current minor releases are not tagged unless requested.
+
 ## v2.4 - Improve Create Event Logic
 
 - Improved new calendar event defaults so start times use the next half-hour and end times default to one hour later.
