@@ -2,6 +2,23 @@
 
 This file records the main product and code changes for Home Base.
 
+## v3.0 - Unified Calendars
+
+- Added unified Today and Next 7 Days views across every enabled iCloud/CalDAV and Google calendar.
+- Added a dedicated Home Base Calendar tab with switchable Month, Week, and Day views, an iCloud/Google source sidebar, date and time-slot event creation, and read-only event details.
+- Added full-range calendar caching so the dashboard and calendar tab can load different date ranges concurrently without cancelling each other.
+- Added multi-calendar discovery, per-calendar colors and visibility controls, partial sync errors, read-only permissions, and target-calendar selection when creating events.
+- Added multi-account Google Calendar OAuth 2.0 with PKCE, encrypted refresh-token sync, Calendar API event loading, and event create/edit/delete support.
+- Limited calendar sources to iCloud/CalDAV and Google Calendar, removing local Reminders, Birthdays, and other macOS-only sources.
+- Made Home Base render immediately while todos, workouts, and remote calendars load independently in the background.
+- Added session-only calendar caching, request deduplication, stale-result protection, and non-blocking refresh states.
+- Fixed iCloud calendar discovery requests by declaring the Apple calendar-color XML namespace and surfacing CalDAV HTTP errors clearly.
+- Replaced unsupported browser passphrase prompts with an Obsidian-native password modal for Google Calendar connection and token refresh.
+- Fixed Google OAuth callback races, delayed the browser success page until calendars are saved, and surfaced actionable connection failures in both the browser and Obsidian.
+- Added local SecretStorage support for the Google Desktop OAuth client secret, including first-connect prompting and a replace action without writing the credential to synced settings or source files.
+- Raised the minimum Obsidian version to `1.11.4` for SecretStorage-backed local encryption keys.
+- Major release tag will be created only after the feature commit is explicitly approved.
+
 ## v2.5 - Compact Create Event Time Picker
 
 - Replaced the native scrolling time fields in the Create Event modal with a compact popover picker.

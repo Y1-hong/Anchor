@@ -1,8 +1,8 @@
 {
   "id": "home-base",
   "name": "Home Base",
-  "version": "2.5",
-  "minAppVersion": "1.5.0",
+  "version": "3.0",
+  "minAppVersion": "1.11.4",
   "description": "A personal Obsidian dashboard for todos, routines, and daily momentum.",
   "author": "Yihong Huang",
   "authorUrl": "",

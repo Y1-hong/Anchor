@@ -1,6 +1,6 @@
 {
   "name": "home-base",
-  "version": "2.5",
+  "version": "3.0",
   "description": "A personal Obsidian dashboard plugin.",
   "main": "main.js",
   "scripts": {
@@ -20,7 +20,7 @@
     "@types/node": "^20.11.30",
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.20.2",
-    "obsidian": "^1.5.12",
+    "obsidian": "^1.11.4",
     "tslib": "^2.6.2",
     "typescript": "^5.4.2"
   }
