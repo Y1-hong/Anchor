@@ -17,7 +17,7 @@ This file records the main product and code changes for Home Base.
 - Fixed Google OAuth callback races, delayed the browser success page until calendars are saved, and surfaced actionable connection failures in both the browser and Obsidian.
 - Added local SecretStorage support for the Google Desktop OAuth client secret, including first-connect prompting and a replace action without writing the credential to synced settings or source files.
 - Raised the minimum Obsidian version to `1.11.4` for SecretStorage-backed local encryption keys.
-- Major release tag will be created only after the feature commit is explicitly approved.
+- Tagged release: `v3.0`.
 
 ## v2.5 - Compact Create Event Time Picker
 
