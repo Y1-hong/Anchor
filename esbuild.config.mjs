@@ -5,13 +5,12 @@ const prod = process.argv[2] === "production";
 
 const context = await esbuild.context({
   banner: {
-    js: "/* Home Base Obsidian plugin */"
+    js: "/* Anchor Obsidian plugin */"
   },
   entryPoints: ["src/main.ts"],
   bundle: true,
   external: [
     "obsidian",
-    "electron",
     "@codemirror/autocomplete",
     "@codemirror/collab",
     "@codemirror/commands",

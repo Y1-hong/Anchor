@@ -1,8 +1,8 @@
-# Home Base
+# Anchor
 
-Home Base is an Obsidian community plugin that turns a custom Obsidian view into a personal daily dashboard for todos, workout routines, and calendars.
+Anchor is an Obsidian community plugin that turns a custom Obsidian view into a personal daily dashboard for todos, workout routines, and calendars.
 
-Current release: `v3.0`
+Current release: `v3.1`
 
 Minimum Obsidian version: `1.11.4`
 
@@ -10,8 +10,8 @@ Minimum Obsidian version: `1.11.4`
 
 ### Daily dashboard
 
-- Opens from the Home Base ribbon icon or the command palette.
-- Shows Today and Next 7 Days events from every enabled iCloud/CalDAV and Google calendar.
+- Opens from the Anchor ribbon icon or the command palette.
+- Shows Today and Next 7 Days events from every enabled iCloud/CalDAV calendar.
 - Loads todos, workouts, and remote calendars independently so one slow source does not block the dashboard.
 
 ### Todo Manager
@@ -42,12 +42,11 @@ Stored Markdown:
 - Supports editing exercise lists and reordering workout sequence steps.
 - Records completed and skipped workouts in the workout log.
 
-### Unified Calendars
+### iCloud / CalDAV Calendars
 
 - Connects to iCloud and other CalDAV event calendars.
-- Connects multiple Google Calendar accounts through OAuth 2.0 with PKCE.
 - Discovers multiple calendars and provides per-calendar colors and visibility controls.
-- Combines enabled calendars in the dashboard and the dedicated Home Base Calendar view.
+- Combines enabled calendars in the dashboard and the dedicated Anchor Calendar view.
 - Provides Month, Week, and Day views with source filtering and event details.
 - Supports event creation, editing, and deletion when the selected calendar is writable.
 - Supports timed, all-day, and repeating CalDAV events.
@@ -58,47 +57,38 @@ Stored Markdown:
 Build or download the plugin, then place only these files in the plugin directory:
 
 ```text
-<vault>/.obsidian/plugins/home-base/manifest.json
-<vault>/.obsidian/plugins/home-base/main.js
-<vault>/.obsidian/plugins/home-base/styles.css
+<vault>/.obsidian/plugins/anchor/manifest.json
+<vault>/.obsidian/plugins/anchor/main.js
+<vault>/.obsidian/plugins/anchor/styles.css
 ```
 
-Restart Obsidian or reload community plugins, then enable **Home Base** under **Settings → Community plugins**.
+Restart Obsidian or reload community plugins, then enable **Anchor** under **Settings → Community plugins**.
 
 Do not copy the development repository or `node_modules` into the vault plugin directory.
 
 ## Getting Started
 
-1. Enable Home Base in Obsidian.
-2. Open **Home Base** from the ribbon or command palette.
-3. Review the file locations and startup behavior in **Settings → Home Base**.
-4. Enable Calendar if you want to connect iCloud/CalDAV or Google Calendar.
+1. Enable Anchor in Obsidian.
+2. Open **Anchor** from the ribbon or command palette.
+3. Review the file locations and startup behavior in **Settings → Anchor**.
+4. Enable Calendar if you want to connect iCloud/CalDAV.
 
 ### iCloud / CalDAV
 
-1. Enable Calendar in Home Base settings.
+1. Enable Calendar in Anchor settings.
 2. Set the CalDAV server URL. For iCloud, use `https://caldav.icloud.com`.
 3. Enter the Apple ID email and an app-specific password.
 4. Test the connection and discover the available calendars.
 5. Choose which calendars are visible and select a writable default calendar for new events.
 
-### Google Calendar
-
-1. Start the connection from Obsidian Desktop.
-2. If requested, enter the Google Desktop OAuth client secret. It is stored locally in Obsidian SecretStorage.
-3. Create a sync passphrase when prompted, then finish authorization in the browser.
-4. Enable the calendars you want Home Base to display.
-
-Google refresh tokens are encrypted before they are written to synced plugin settings. Account connection must start on Desktop; the connected vault can then be synced for use on mobile.
-
 ## Vault Data
 
-Home Base creates and maintains these Markdown-backed files by default:
+Anchor creates and maintains these Markdown-backed files by default:
 
 ```text
-Home Base/Todo Inbox.md
-Home Base/Workout Plan.md
-Home Base/Workout Log.md
+Anchor/Todo Inbox.md
+Anchor/Workout Plan.md
+Anchor/Workout Log.md
 ```
 
 Workout plan example:
@@ -125,7 +115,7 @@ Workout log example:
 - date:: 2026-06-18 workout:: Pull status:: done
 ```
 
-These paths can be changed in Home Base settings.
+These paths can be changed in Anchor settings.
 
 ## Development
 

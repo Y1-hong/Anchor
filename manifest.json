@@ -1,7 +1,7 @@
 {
-  "id": "home-base",
-  "name": "Home Base",
-  "version": "3.0",
+  "id": "anchor",
+  "name": "Anchor",
+  "version": "3.1",
   "minAppVersion": "1.11.4",
   "description": "A personal Obsidian dashboard for todos, routines, and daily momentum.",
   "author": "Yihong Huang",

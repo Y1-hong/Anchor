@@ -5,7 +5,6 @@ import {
   Notice,
   Plugin,
   PluginSettingTab,
-  Platform,
   Setting,
   TFile,
   WorkspaceLeaf,
@@ -14,10 +13,8 @@ import {
   setIcon
 } from "obsidian";
 
-declare const require: (id: string) => any;
-
-const VIEW_TYPE_HOME_BASE = "home-base-dashboard";
-const VIEW_TYPE_HOME_BASE_CALENDAR = "home-base-calendar";
+const VIEW_TYPE_ANCHOR = "anchor-dashboard";
+const VIEW_TYPE_ANCHOR_CALENDAR = "anchor-calendar";
 
 type Priority = "high" | "medium" | "low" | "";
 type TodoGroup = "Overdue" | "Today" | "Tomorrow" | "Next 7 Days" | "No Due Date" | "Later";
@@ -31,7 +28,7 @@ interface CalendarEventModalOptions {
   readOnly?: boolean;
 }
 
-interface HomeBaseSettings {
+interface AnchorSettings {
   openOnStartup: boolean;
   todoInboxPath: string;
   todoScanFolders: string;
@@ -46,24 +43,6 @@ interface HomeBaseSettings {
   calendarName: string;
   calendarSources: CalendarSource[];
   defaultCalendarId: string;
-  googleAccounts: GoogleCalendarAccount[];
-}
-
-interface GoogleCalendarAccount {
-  id: string;
-  email: string;
-  encryptedRefreshToken: string;
-  tokenSalt: string;
-  tokenIv: string;
-}
-
-interface GoogleCalendarListEntry {
-  id: string;
-  summary: string;
-  summaryOverride?: string;
-  backgroundColor?: string;
-  accessRole: string;
-  primary?: boolean;
 }
 
 interface TodoItem {
@@ -89,7 +68,7 @@ interface WorkoutLogEntry {
   status: "done" | "skipped" | "pending";
 }
 
-type CalendarProvider = "icloud" | "google";
+type CalendarProvider = "icloud";
 type CalendarLoadStatus = "loading" | "refreshing" | "ready" | "error";
 
 interface CalendarSource {
@@ -152,12 +131,12 @@ interface CalendarEventDraft {
   repeatUntil: string;
 }
 
-const DEFAULT_SETTINGS: HomeBaseSettings = {
+const DEFAULT_SETTINGS: AnchorSettings = {
   openOnStartup: true,
-  todoInboxPath: "Home Base/Todo Inbox.md",
-  todoScanFolders: "Home Base",
-  workoutPlanPath: "Home Base/Workout Plan.md",
-  workoutLogPath: "Home Base/Workout Log.md",
+  todoInboxPath: "Anchor/Todo Inbox.md",
+  todoScanFolders: "Anchor",
+  workoutPlanPath: "Anchor/Workout Plan.md",
+  workoutLogPath: "Anchor/Workout Log.md",
   showSchedulePlaceholder: true,
   calendarEnabled: false,
   calendarServerUrl: "https://caldav.icloud.com",
@@ -166,8 +145,7 @@ const DEFAULT_SETTINGS: HomeBaseSettings = {
   calendarUrl: "",
   calendarName: "",
   calendarSources: [],
-  defaultCalendarId: "",
-  googleAccounts: []
+  defaultCalendarId: ""
 };
 
 const DEFAULT_TODO_INBOX = `# Todo Inbox
@@ -207,72 +185,6 @@ const DEFAULT_WORKOUT_LOG = `# Workout Log
 `;
 
 const CALDAV_NS = "urn:ietf:params:xml:ns:caldav";
-const GOOGLE_CLIENT_ID = "624562241406-v5ush8aaff978b0uou1i7ihuj880fj63.apps.googleusercontent.com";
-const GOOGLE_SCOPES = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly";
-const GOOGLE_SECRET_ID = "home-base-google-sync-key";
-const GOOGLE_CLIENT_SECRET_ID = "home-base-google-client-secret";
-const GOOGLE_OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
-
-function escapeHtmlText(value: string) {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    "\"": "&quot;",
-    "'": "&#39;"
-  })[character] ?? character);
-}
-
-function googleOAuthResultPage(success: boolean, message: string) {
-  const title = success ? "Google Calendar connected to Home Base." : "Google Calendar connection failed.";
-  const nextStep = success
-    ? "You may close this window and return to Obsidian."
-    : "Return to Obsidian, correct the issue, and try connecting again.";
-  return `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtmlText(title)}</title></head>
-<body style="font:16px system-ui,sans-serif;max-width:720px;margin:64px auto;padding:0 24px;line-height:1.5;color:#202124">
-  <h2>${escapeHtmlText(title)}</h2>
-  <p>${escapeHtmlText(message)}</p>
-  <p>${escapeHtmlText(nextStep)}</p>
-</body>
-</html>`;
-}
-
-function base64Url(bytes: Uint8Array) {
-  let binary = "";
-  bytes.forEach((byte) => binary += String.fromCharCode(byte));
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  let binary = "";
-  bytes.forEach((byte) => binary += String.fromCharCode(byte));
-  return btoa(binary);
-}
-
-function base64ToBytes(value: string) {
-  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
-}
-
-async function deriveEncryptionKey(passphrase: string, salt: Uint8Array) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt: salt as BufferSource, iterations: 210_000, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-
-async function encryptSecret(value: string, passphrase: string) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveEncryptionKey(passphrase, salt);
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-  return { encrypted: bytesToBase64(new Uint8Array(encrypted)), salt: bytesToBase64(salt), iv: bytesToBase64(iv) };
-}
-
-async function decryptSecret(value: string, passphrase: string, salt: string, iv: string) {
-  const key = await deriveEncryptionKey(passphrase, base64ToBytes(salt));
-  const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: base64ToBytes(iv) }, key, base64ToBytes(value));
-  return new TextDecoder().decode(decrypted);
-}
 const DAV_NS = "DAV:";
 
 function normalizeRemoteUrl(url: string) {
@@ -490,7 +402,7 @@ function buildNewIcsEvent(draft: CalendarEventDraft, uid: string) {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Home Base//Obsidian Calendar//EN",
+    "PRODID:-//Anchor//Obsidian Calendar//EN",
     "CALSCALE:GREGORIAN",
     "BEGIN:VEVENT",
     `CREATED:${formatIcsUtcDateTime(new Date())}`,
@@ -650,8 +562,8 @@ function parseXml(text: string) {
   return new DOMParser().parseFromString(text, "application/xml");
 }
 
-const HOME_BASE_STYLES = `
-.home-base-view {
+const ANCHOR_STYLES = `
+.anchor-view {
   min-height: 100%;
   padding: 32px;
   color: var(--text-normal);
@@ -660,43 +572,43 @@ const HOME_BASE_STYLES = `
     var(--background-primary);
 }
 
-.home-base-header {
+.anchor-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   margin-bottom: 22px;
 }
 
-.home-base-header h1 {
+.anchor-header h1 {
   margin: 0 0 8px;
   font-size: 30px;
   letter-spacing: 0;
 }
 
-.home-base-date,
-.home-base-greeting,
-.home-base-muted {
+.anchor-date,
+.anchor-greeting,
+.anchor-muted {
   color: var(--text-muted);
 }
 
-.home-base-greeting {
+.anchor-greeting {
   margin-top: 6px;
 }
 
-.home-base-grid {
+.anchor-grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(360px, 1.2fr);
   gap: 22px;
   align-items: start;
 }
 
-.home-base-column {
+.anchor-column {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-.home-base-panel {
+.anchor-panel {
   padding: 20px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
@@ -704,19 +616,19 @@ const HOME_BASE_STYLES = `
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.14);
 }
 
-.home-base-panel-title {
+.anchor-panel-title {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 18px;
 }
 
-.home-base-panel-title h2 {
+.anchor-panel-title h2 {
   margin: 0;
   font-size: 18px;
 }
 
-.home-base-icon {
+.anchor-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -726,8 +638,8 @@ const HOME_BASE_STYLES = `
   font-size: 12px;
 }
 
-.home-base-pill,
-.home-base-priority {
+.anchor-pill,
+.anchor-priority {
   display: inline-flex;
   align-items: center;
   min-height: 22px;
@@ -737,12 +649,12 @@ const HOME_BASE_STYLES = `
   font-weight: 600;
 }
 
-.home-base-pill {
+.anchor-pill {
   color: var(--interactive-accent);
   background: rgba(124, 97, 255, 0.14);
 }
 
-.home-base-schedule-empty {
+.anchor-schedule-empty {
   display: flex;
   gap: 16px;
   align-items: center;
@@ -751,24 +663,24 @@ const HOME_BASE_STYLES = `
   border-radius: 8px;
 }
 
-.home-base-schedule-empty p {
+.anchor-schedule-empty p {
   margin: 4px 0 0;
   color: var(--text-muted);
 }
 
-.home-base-calendar-mark {
+.anchor-calendar-mark {
   color: var(--text-muted);
   font-size: 13px;
 }
 
-.home-base-calendar-controls {
+.anchor-calendar-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 18px;
 }
 
-.home-base-calendar-error {
+.anchor-calendar-error {
   padding: 14px;
   border: 1px solid rgba(199, 74, 48, 0.5);
   border-radius: 8px;
@@ -776,15 +688,15 @@ const HOME_BASE_STYLES = `
   background: rgba(199, 74, 48, 0.12);
 }
 
-.home-base-calendar-error p {
+.anchor-calendar-error p {
   margin: 6px 0 0;
 }
 
-.home-base-calendar-group {
+.anchor-calendar-group {
   margin-top: 18px;
 }
 
-.home-base-calendar-event {
+.anchor-calendar-event {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr) auto;
   gap: 12px;
@@ -796,22 +708,22 @@ const HOME_BASE_STYLES = `
   background: var(--background-primary);
 }
 
-.home-base-calendar-time {
+.anchor-calendar-time {
   color: var(--interactive-accent);
   font-size: 12px;
   font-weight: 700;
 }
 
-.home-base-calendar-time.is-all-day {
+.anchor-calendar-time.is-all-day {
   color: var(--text-muted);
 }
 
-.home-base-calendar-title {
+.anchor-calendar-title {
   margin-bottom: 6px;
   font-weight: 600;
 }
 
-.home-base-calendar-source-dot {
+.anchor-calendar-source-dot {
   display: inline-block;
   width: 9px;
   height: 9px;
@@ -820,7 +732,7 @@ const HOME_BASE_STYLES = `
   box-shadow: 0 0 0 1px var(--background-modifier-border);
 }
 
-.home-base-calendar-meta {
+.anchor-calendar-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -828,59 +740,59 @@ const HOME_BASE_STYLES = `
   font-size: 13px;
 }
 
-.home-base-italic {
+.anchor-italic {
   font-style: italic;
 }
 
-.home-base-todo-controls {
+.anchor-todo-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 18px;
 }
 
-.home-base-primary-button,
-.home-base-secondary-button,
-.home-base-wide-button,
-.home-base-icon-button,
-.home-base-ghost-button {
+.anchor-primary-button,
+.anchor-secondary-button,
+.anchor-wide-button,
+.anchor-icon-button,
+.anchor-ghost-button {
   min-height: 36px;
   border-radius: 6px;
 }
 
-.home-base-wide-button {
+.anchor-wide-button {
   width: 100%;
   margin: 12px 0;
 }
 
-.home-base-icon-button {
+.anchor-icon-button {
   padding: 0 14px;
 }
 
-.home-base-secondary-button {
+.anchor-secondary-button {
   background: var(--background-modifier-form-field);
 }
 
-.home-base-ghost-button {
+.anchor-ghost-button {
   padding: 4px 8px;
   color: var(--text-muted);
   background: transparent;
   box-shadow: none;
 }
 
-.home-base-todo-group {
+.anchor-todo-group {
   margin-top: 18px;
 }
 
-.home-base-todo-group h3,
-.home-base-panel h3 {
+.anchor-todo-group h3,
+.anchor-panel h3 {
   margin: 0 0 10px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   font-size: 15px;
 }
 
-.home-base-todo-item {
+.anchor-todo-item {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 12px;
@@ -892,21 +804,21 @@ const HOME_BASE_STYLES = `
   background: var(--background-primary);
 }
 
-.home-base-todo-item.is-complete {
+.anchor-todo-item.is-complete {
   opacity: 0.58;
 }
 
-.home-base-checkbox {
+.anchor-checkbox {
   width: 18px;
   height: 18px;
 }
 
-.home-base-todo-name {
+.anchor-todo-name {
   margin-bottom: 7px;
   font-weight: 500;
 }
 
-.home-base-todo-meta {
+.anchor-todo-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -915,31 +827,31 @@ const HOME_BASE_STYLES = `
   font-size: 13px;
 }
 
-.home-base-priority.is-high {
+.anchor-priority.is-high {
   color: #ff8f7e;
   background: rgba(199, 74, 48, 0.18);
 }
 
-.home-base-priority.is-medium {
+.anchor-priority.is-medium {
   color: #e7bd5b;
   background: rgba(178, 132, 32, 0.18);
 }
 
-.home-base-priority.is-low {
+.anchor-priority.is-low {
   color: #8dd277;
   background: rgba(70, 139, 63, 0.18);
 }
 
-.home-base-tag {
+.anchor-tag {
   color: var(--interactive-accent);
 }
 
-.home-base-actions {
+.anchor-actions {
   display: flex;
   gap: 4px;
 }
 
-.home-base-unresolved {
+.anchor-unresolved {
   margin-bottom: 18px;
   padding: 14px;
   border: 1px solid rgba(226, 170, 68, 0.5);
@@ -948,63 +860,63 @@ const HOME_BASE_STYLES = `
   background: rgba(226, 170, 68, 0.1);
 }
 
-.home-base-unresolved-actions {
+.anchor-unresolved-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
 }
 
-.home-base-workout-name {
+.anchor-workout-name {
   margin: 8px 0 10px;
   color: var(--interactive-accent);
   font-size: 30px;
   font-weight: 700;
 }
 
-.home-base-exercises {
+.anchor-exercises {
   margin-top: 0;
 }
 
-.home-base-exercises li::marker {
+.anchor-exercises li::marker {
   color: var(--interactive-accent);
 }
 
-.home-base-workout-actions {
+.anchor-workout-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 
-.home-base-sequence {
+.anchor-sequence {
   margin-top: 18px;
   color: var(--text-muted);
 }
 
-.home-base-modal .setting-item {
+.anchor-modal .setting-item {
   border-top: 0;
 }
 
-.home-base-time-setting .setting-item-control {
+.anchor-time-setting .setting-item-control {
   flex: 1;
 }
 
-.home-base-time-field {
+.anchor-time-field {
   position: relative;
   width: min(260px, 100%);
 }
 
-.home-base-time-input-wrap {
+.anchor-time-input-wrap {
   position: relative;
 }
 
-.home-base-time-input {
+.anchor-time-input {
   width: 100%;
   padding-right: 36px;
   cursor: pointer;
 }
 
-.home-base-time-icon {
+.anchor-time-icon {
   position: absolute;
   top: 50%;
   right: 11px;
@@ -1018,7 +930,7 @@ const HOME_BASE_STYLES = `
   transform: translateY(-50%);
 }
 
-.home-base-time-popover {
+.anchor-time-popover {
   position: absolute;
   top: calc(100% + 12px);
   left: 0;
@@ -1034,15 +946,15 @@ const HOME_BASE_STYLES = `
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.18);
 }
 
-.home-base-time-popover.is-above {
+.anchor-time-popover.is-above {
   top: auto;
   bottom: calc(100% + 12px);
 }
 
-.home-base-time-popover::before {
+.anchor-time-popover::before {
   position: absolute;
   top: -7px;
-  left: var(--home-base-time-pointer-left, 28px);
+  left: var(--anchor-time-pointer-left, 28px);
   width: 14px;
   height: 14px;
   border-top: 1px solid var(--background-modifier-border);
@@ -1052,7 +964,7 @@ const HOME_BASE_STYLES = `
   transform: rotate(45deg);
 }
 
-.home-base-time-popover.is-above::before {
+.anchor-time-popover.is-above::before {
   top: auto;
   bottom: -7px;
   border: 0;
@@ -1060,20 +972,20 @@ const HOME_BASE_STYLES = `
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.home-base-time-column,
-.home-base-period-column {
+.anchor-time-column,
+.anchor-period-column {
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.home-base-time-column {
+.anchor-time-column {
   flex-direction: column;
   gap: 7px;
   touch-action: none;
 }
 
-.home-base-time-value {
+.anchor-time-value {
   min-width: 54px;
   color: var(--text-normal);
   font-size: 30px;
@@ -1082,13 +994,13 @@ const HOME_BASE_STYLES = `
   text-align: center;
 }
 
-.home-base-time-step,
-.home-base-period-button {
+.anchor-time-step,
+.anchor-period-button {
   border: 0;
   box-shadow: none;
 }
 
-.home-base-time-step {
+.anchor-time-step {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1099,24 +1011,24 @@ const HOME_BASE_STYLES = `
   background: transparent;
 }
 
-.home-base-time-step:hover,
-.home-base-time-step:focus-visible {
+.anchor-time-step:hover,
+.anchor-time-step:focus-visible {
   color: var(--text-normal);
   background: var(--background-secondary);
 }
 
-.home-base-time-divider {
+.anchor-time-divider {
   width: 1px;
   min-height: 110px;
   background: var(--background-modifier-border);
 }
 
-.home-base-period-column {
+.anchor-period-column {
   flex-direction: column;
   gap: 8px;
 }
 
-.home-base-period-button {
+.anchor-period-button {
   min-width: 46px;
   height: 34px;
   padding: 0 10px;
@@ -1126,27 +1038,27 @@ const HOME_BASE_STYLES = `
   font-weight: 700;
 }
 
-.home-base-period-button.is-selected {
+.anchor-period-button.is-selected {
   color: var(--text-on-accent);
   background: var(--interactive-accent);
 }
 
-.home-base-time-input:focus-visible,
-.home-base-time-step:focus-visible,
-.home-base-period-button:focus-visible {
+.anchor-time-input:focus-visible,
+.anchor-time-step:focus-visible,
+.anchor-period-button:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
 }
 
-.home-base-routine-modal {
+.anchor-routine-modal {
   max-width: 780px;
 }
 
-.home-base-routine-section {
+.anchor-routine-section {
   margin-top: 22px;
 }
 
-.home-base-routine-section-header {
+.anchor-routine-section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1154,11 +1066,11 @@ const HOME_BASE_STYLES = `
   margin-bottom: 12px;
 }
 
-.home-base-routine-section-header h3 {
+.anchor-routine-section-header h3 {
   margin: 0;
 }
 
-.home-base-routine-card {
+.anchor-routine-card {
   margin-bottom: 12px;
   padding: 14px;
   border: 1px solid var(--background-modifier-border);
@@ -1166,27 +1078,27 @@ const HOME_BASE_STYLES = `
   background: var(--background-secondary);
 }
 
-.home-base-routine-card-row,
-.home-base-sequence-row,
-.home-base-modal-footer {
+.anchor-routine-card-row,
+.anchor-sequence-row,
+.anchor-modal-footer {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.home-base-routine-name,
-.home-base-sequence-row select {
+.anchor-routine-name,
+.anchor-sequence-row select {
   flex: 1;
 }
 
-.home-base-routine-exercises {
+.anchor-routine-exercises {
   width: 100%;
   min-height: 86px;
   margin-top: 10px;
   resize: vertical;
 }
 
-.home-base-sequence-row {
+.anchor-sequence-row {
   margin-bottom: 8px;
   padding: 10px;
   border: 1px solid var(--background-modifier-border);
@@ -1194,7 +1106,7 @@ const HOME_BASE_STYLES = `
   background: var(--background-secondary);
 }
 
-.home-base-sequence-index {
+.anchor-sequence-index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1206,70 +1118,69 @@ const HOME_BASE_STYLES = `
   font-size: 12px;
 }
 
-.home-base-modal-footer {
+.anchor-modal-footer {
   justify-content: flex-end;
   margin-top: 24px;
 }
 
 @media (max-width: 900px) {
-  .home-base-view {
+  .anchor-view {
     padding: 18px;
   }
 
-  .home-base-grid {
+  .anchor-grid {
     grid-template-columns: 1fr;
   }
 
-  .home-base-todo-item {
+  .anchor-todo-item {
     grid-template-columns: 28px minmax(0, 1fr);
   }
 
-  .home-base-calendar-event {
+  .anchor-calendar-event {
     grid-template-columns: 1fr;
   }
 
-  .home-base-actions {
+  .anchor-actions {
     grid-column: 2;
   }
 
-  .home-base-calendar-event .home-base-actions {
+  .anchor-calendar-event .anchor-actions {
     grid-column: 1;
   }
 
-  .home-base-routine-card-row,
-  .home-base-sequence-row {
+  .anchor-routine-card-row,
+  .anchor-sequence-row {
     align-items: stretch;
     flex-direction: column;
   }
 }
 `;
 
-const HOME_BASE_CALENDAR_STYLES = `
-.home-base-calendar-view{min-height:100%;padding:24px;color:var(--text-normal);background:radial-gradient(circle at top right,rgba(124,97,255,.1),transparent 38rem),var(--background-primary)}
-.home-base-calendar-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:18px}.home-base-calendar-heading h1{margin:0;font-size:28px}.home-base-calendar-heading-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:5px;color:var(--text-muted);font-size:13px}.home-base-calendar-heading-meta>span+span:not(.home-base-pill)::before{content:"·";margin-right:8px}
-.home-base-calendar-header-controls,.home-base-calendar-navigation,.home-base-calendar-header-actions,.home-base-calendar-mode-switch{display:flex;align-items:center;gap:8px}.home-base-calendar-header-controls{flex-wrap:wrap;justify-content:flex-end}.home-base-calendar-nav-button,.home-base-calendar-header-controls button{min-width:40px;min-height:40px}.home-base-calendar-nav-button{display:inline-flex;align-items:center;justify-content:center;padding:0}.home-base-calendar-nav-button svg,.home-base-calendar-provider-title svg{width:17px;height:17px}
-.home-base-calendar-mode-switch{padding:3px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary)}.home-base-calendar-mode-switch button{min-height:34px;padding:0 13px;background:transparent;box-shadow:none}.home-base-calendar-mode-switch button.is-selected{color:var(--text-on-accent);background:var(--interactive-accent)}
-.home-base-calendar-layout{display:grid;grid-template-columns:minmax(210px,240px) minmax(0,1fr);gap:16px;align-items:start}.home-base-calendar-sidebar,.home-base-calendar-main{border:1px solid var(--background-modifier-border);border-radius:10px;background:color-mix(in srgb,var(--background-secondary) 88%,transparent)}.home-base-calendar-sidebar{position:sticky;top:12px;padding:16px}.home-base-calendar-sidebar>summary{display:none;cursor:pointer;font-weight:650}.home-base-calendar-provider+.home-base-calendar-provider{margin-top:22px}.home-base-calendar-provider-title{display:flex;align-items:center;gap:8px;margin-bottom:10px}.home-base-calendar-provider-title h2{margin:0;font-size:15px}
-.home-base-calendar-source{display:grid;grid-template-columns:18px 10px minmax(0,1fr);gap:8px;align-items:center;min-height:44px;padding:6px 4px;border-radius:6px;cursor:pointer}.home-base-calendar-source:hover{background:var(--background-modifier-hover)}.home-base-calendar-source input{margin:0}.home-base-calendar-source-copy,.home-base-calendar-source-name,.home-base-calendar-source-account{display:block;min-width:0}.home-base-calendar-source-name,.home-base-calendar-source-account{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.home-base-calendar-source-name{font-weight:600}.home-base-calendar-source-account{margin-top:2px;color:var(--text-muted);font-size:11px}
-.home-base-calendar-main{min-width:0;overflow:auto}.home-base-calendar-main>.home-base-calendar-error{margin:14px}.home-base-calendar-empty,.home-base-calendar-loading{padding:48px 24px;color:var(--text-muted);text-align:center}.home-base-calendar-empty h2{color:var(--text-normal)}
-.home-base-month-calendar{min-width:720px}.home-base-month-weekdays,.home-base-month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.home-base-month-weekdays{position:sticky;top:0;z-index:4;border-bottom:1px solid var(--background-modifier-border);background:var(--background-secondary)}.home-base-month-weekdays>div{padding:10px;color:var(--text-muted);font-size:12px;font-weight:650;text-align:center;text-transform:uppercase}.home-base-month-grid{grid-auto-rows:minmax(116px,1fr)}
-.home-base-month-day{position:relative;min-width:0;padding:8px;border-right:1px solid var(--background-modifier-border);border-bottom:1px solid var(--background-modifier-border);outline:none;background:var(--background-primary)}.home-base-month-day:nth-child(7n){border-right:0}.home-base-month-day.is-outside{background:color-mix(in srgb,var(--background-secondary) 72%,transparent)}.home-base-month-day.is-outside .home-base-month-day-number{color:var(--text-faint)}.home-base-month-day:focus-visible,.home-base-month-day:focus-within{z-index:2;box-shadow:inset 0 0 0 2px var(--interactive-accent)}
-.home-base-month-day-number{display:inline-flex;align-items:center;justify-content:center;width:30px;min-width:30px;height:30px;min-height:30px;margin-bottom:5px;padding:0;border-radius:999px;color:var(--text-muted);background:transparent;box-shadow:none}.home-base-month-day.is-today .home-base-month-day-number{color:var(--text-on-accent);background:var(--interactive-accent);font-weight:700}.home-base-month-events{display:flex;flex-direction:column;gap:3px;min-height:66px}
-.home-base-month-event,.home-base-all-day-event,.home-base-calendar-timed-event{border:0;border-left:3px solid var(--home-base-event-color);border-radius:5px;color:var(--text-normal);background:color-mix(in srgb,var(--home-base-event-color) 20%,var(--background-primary));box-shadow:none;text-align:left}.home-base-month-event{display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:24px;padding:3px 5px;font-size:11px}.home-base-month-event-provider,.home-base-calendar-provider-tag{flex:0 0 auto;color:var(--text-muted);font-size:9px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}.home-base-month-event-time{flex:0 0 auto;color:var(--text-muted)}.home-base-month-event-title{overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}.home-base-month-more{width:100%;min-height:24px;padding:2px 5px;color:var(--text-muted);background:transparent;box-shadow:none;font-size:11px;text-align:left}
-.home-base-time-calendar{min-width:720px}.home-base-time-calendar.is-day{min-width:520px}.home-base-time-calendar-header,.home-base-all-day-row{display:grid;grid-template-columns:64px minmax(0,1fr)}.home-base-time-calendar-header,.home-base-all-day-row{border-bottom:1px solid var(--background-modifier-border)}.home-base-time-gutter{display:flex;align-items:center;justify-content:flex-end;padding:8px;color:var(--text-muted);font-size:10px;text-transform:uppercase}.home-base-time-day-headers,.home-base-all-day-columns,.home-base-time-columns{display:grid;grid-template-columns:repeat(var(--home-base-calendar-days),minmax(0,1fr))}
-.home-base-time-day-header{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:58px;border-radius:0;background:transparent;box-shadow:none}.home-base-time-day-header span{color:var(--text-muted);font-size:11px;text-transform:uppercase}.home-base-time-day-header.is-today strong{color:var(--interactive-accent)}.home-base-all-day-row{min-height:54px}.home-base-all-day-column{min-width:0;padding:5px;border-left:1px solid var(--background-modifier-border)}.home-base-all-day-event{display:flex;align-items:center;gap:5px;width:100%;min-height:26px;margin-bottom:3px;padding:4px 6px;overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
-.home-base-calendar-time-scroll{display:grid;grid-template-columns:64px minmax(0,1fr);max-height:min(68vh,720px);overflow-y:auto;overscroll-behavior:contain}.home-base-time-labels{display:grid;grid-template-rows:repeat(24,64px)}.home-base-time-labels>div{padding:0 8px;color:var(--text-muted);font-size:10px;text-align:right;transform:translateY(-6px)}.home-base-time-day-column{position:relative;display:grid;grid-template-rows:repeat(48,32px);min-width:0;border-left:1px solid var(--background-modifier-border);background:var(--background-primary)}.home-base-time-day-column.is-today{background:color-mix(in srgb,var(--interactive-accent) 4%,var(--background-primary))}
-.home-base-time-slot{min-width:0;min-height:32px;padding:0;border:0;border-bottom:1px solid color-mix(in srgb,var(--background-modifier-border) 58%,transparent);border-radius:0;background:transparent;box-shadow:none}.home-base-time-slot:nth-child(2n){border-bottom-color:var(--background-modifier-border)}.home-base-time-slot:hover,.home-base-time-slot:focus-visible{background:color-mix(in srgb,var(--interactive-accent) 10%,transparent)}.home-base-calendar-timed-event{position:absolute;z-index:3;display:flex;flex-direction:column;align-items:flex-start;min-height:28px;padding:5px 6px;overflow:hidden;font-size:10px}.home-base-calendar-timed-event strong,.home-base-calendar-timed-event>span:last-child{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.home-base-current-time{position:absolute;right:0;left:0;z-index:5;height:2px;pointer-events:none;background:var(--text-error)}.home-base-current-time::before{position:absolute;top:-3px;left:-4px;width:8px;height:8px;border-radius:999px;background:var(--text-error);content:""}.home-base-event-details{margin-top:16px}.home-base-event-detail{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;padding:10px 0;border-bottom:1px solid var(--background-modifier-border)}.home-base-event-detail>div{white-space:pre-wrap}
-.home-base-calendar-view button:focus-visible,.home-base-calendar-source input:focus-visible,.home-base-calendar-sidebar>summary:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px}
-@media(prefers-reduced-motion:reduce){.home-base-calendar-view *{scroll-behavior:auto!important;transition:none!important}}
-@media(max-width:900px){.home-base-calendar-view{padding:14px}.home-base-calendar-header{align-items:stretch;flex-direction:column}.home-base-calendar-header-controls{justify-content:flex-start}.home-base-calendar-layout{grid-template-columns:1fr}.home-base-calendar-sidebar{position:static}.home-base-calendar-sidebar>summary{display:list-item}.home-base-calendar-sidebar[open]>summary{margin-bottom:14px}}
+const ANCHOR_CALENDAR_STYLES = `
+.anchor-calendar-view{min-height:100%;padding:24px;color:var(--text-normal);background:radial-gradient(circle at top right,rgba(124,97,255,.1),transparent 38rem),var(--background-primary)}
+.anchor-calendar-header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:18px}.anchor-calendar-heading h1{margin:0;font-size:28px}.anchor-calendar-heading-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:5px;color:var(--text-muted);font-size:13px}.anchor-calendar-heading-meta>span+span:not(.anchor-pill)::before{content:"·";margin-right:8px}
+.anchor-calendar-header-controls,.anchor-calendar-navigation,.anchor-calendar-header-actions,.anchor-calendar-mode-switch{display:flex;align-items:center;gap:8px}.anchor-calendar-header-controls{flex-wrap:wrap;justify-content:flex-end}.anchor-calendar-nav-button,.anchor-calendar-header-controls button{min-width:40px;min-height:40px}.anchor-calendar-nav-button{display:inline-flex;align-items:center;justify-content:center;padding:0}.anchor-calendar-nav-button svg,.anchor-calendar-provider-title svg{width:17px;height:17px}
+.anchor-calendar-mode-switch{padding:3px;border:1px solid var(--background-modifier-border);border-radius:8px;background:var(--background-secondary)}.anchor-calendar-mode-switch button{min-height:34px;padding:0 13px;background:transparent;box-shadow:none}.anchor-calendar-mode-switch button.is-selected{color:var(--text-on-accent);background:var(--interactive-accent)}
+.anchor-calendar-layout{display:grid;grid-template-columns:minmax(210px,240px) minmax(0,1fr);gap:16px;align-items:start}.anchor-calendar-sidebar,.anchor-calendar-main{border:1px solid var(--background-modifier-border);border-radius:10px;background:color-mix(in srgb,var(--background-secondary) 88%,transparent)}.anchor-calendar-sidebar{position:sticky;top:12px;padding:16px}.anchor-calendar-sidebar>summary{display:none;cursor:pointer;font-weight:650}.anchor-calendar-provider+.anchor-calendar-provider{margin-top:22px}.anchor-calendar-provider-title{display:flex;align-items:center;gap:8px;margin-bottom:10px}.anchor-calendar-provider-title h2{margin:0;font-size:15px}
+.anchor-calendar-source{display:grid;grid-template-columns:18px 10px minmax(0,1fr);gap:8px;align-items:center;min-height:44px;padding:6px 4px;border-radius:6px;cursor:pointer}.anchor-calendar-source:hover{background:var(--background-modifier-hover)}.anchor-calendar-source input{margin:0}.anchor-calendar-source-copy,.anchor-calendar-source-name,.anchor-calendar-source-account{display:block;min-width:0}.anchor-calendar-source-name,.anchor-calendar-source-account{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.anchor-calendar-source-name{font-weight:600}.anchor-calendar-source-account{margin-top:2px;color:var(--text-muted);font-size:11px}
+.anchor-calendar-main{min-width:0;overflow:auto}.anchor-calendar-main>.anchor-calendar-error{margin:14px}.anchor-calendar-empty,.anchor-calendar-loading{padding:48px 24px;color:var(--text-muted);text-align:center}.anchor-calendar-empty h2{color:var(--text-normal)}
+.anchor-month-calendar{min-width:720px}.anchor-month-weekdays,.anchor-month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}.anchor-month-weekdays{position:sticky;top:0;z-index:4;border-bottom:1px solid var(--background-modifier-border);background:var(--background-secondary)}.anchor-month-weekdays>div{padding:10px;color:var(--text-muted);font-size:12px;font-weight:650;text-align:center;text-transform:uppercase}.anchor-month-grid{grid-auto-rows:minmax(116px,1fr)}
+.anchor-month-day{position:relative;min-width:0;padding:8px;border-right:1px solid var(--background-modifier-border);border-bottom:1px solid var(--background-modifier-border);outline:none;background:var(--background-primary)}.anchor-month-day:nth-child(7n){border-right:0}.anchor-month-day.is-outside{background:color-mix(in srgb,var(--background-secondary) 72%,transparent)}.anchor-month-day.is-outside .anchor-month-day-number{color:var(--text-faint)}.anchor-month-day:focus-visible,.anchor-month-day:focus-within{z-index:2;box-shadow:inset 0 0 0 2px var(--interactive-accent)}
+.anchor-month-day-number{display:inline-flex;align-items:center;justify-content:center;width:30px;min-width:30px;height:30px;min-height:30px;margin-bottom:5px;padding:0;border-radius:999px;color:var(--text-muted);background:transparent;box-shadow:none}.anchor-month-day.is-today .anchor-month-day-number{color:var(--text-on-accent);background:var(--interactive-accent);font-weight:700}.anchor-month-events{display:flex;flex-direction:column;gap:3px;min-height:66px}
+.anchor-month-event,.anchor-all-day-event,.anchor-calendar-timed-event{border:0;border-left:3px solid var(--anchor-event-color);border-radius:5px;color:var(--text-normal);background:color-mix(in srgb,var(--anchor-event-color) 20%,var(--background-primary));box-shadow:none;text-align:left}.anchor-month-event{display:flex;align-items:center;gap:5px;width:100%;min-width:0;min-height:24px;padding:3px 5px;font-size:11px}.anchor-month-event-provider,.anchor-calendar-provider-tag{flex:0 0 auto;color:var(--text-muted);font-size:9px;font-weight:700;letter-spacing:.03em;text-transform:uppercase}.anchor-month-event-time{flex:0 0 auto;color:var(--text-muted)}.anchor-month-event-title{overflow:hidden;font-weight:650;text-overflow:ellipsis;white-space:nowrap}.anchor-month-more{width:100%;min-height:24px;padding:2px 5px;color:var(--text-muted);background:transparent;box-shadow:none;font-size:11px;text-align:left}
+.anchor-time-calendar{min-width:720px}.anchor-time-calendar.is-day{min-width:520px}.anchor-time-calendar-header,.anchor-all-day-row{display:grid;grid-template-columns:64px minmax(0,1fr)}.anchor-time-calendar-header,.anchor-all-day-row{border-bottom:1px solid var(--background-modifier-border)}.anchor-time-gutter{display:flex;align-items:center;justify-content:flex-end;padding:8px;color:var(--text-muted);font-size:10px;text-transform:uppercase}.anchor-time-day-headers,.anchor-all-day-columns,.anchor-time-columns{display:grid;grid-template-columns:repeat(var(--anchor-calendar-days),minmax(0,1fr))}
+.anchor-time-day-header{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:58px;border-radius:0;background:transparent;box-shadow:none}.anchor-time-day-header span{color:var(--text-muted);font-size:11px;text-transform:uppercase}.anchor-time-day-header.is-today strong{color:var(--interactive-accent)}.anchor-all-day-row{min-height:54px}.anchor-all-day-column{min-width:0;padding:5px;border-left:1px solid var(--background-modifier-border)}.anchor-all-day-event{display:flex;align-items:center;gap:5px;width:100%;min-height:26px;margin-bottom:3px;padding:4px 6px;overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.anchor-calendar-time-scroll{display:grid;grid-template-columns:64px minmax(0,1fr);max-height:min(68vh,720px);overflow-y:auto;overscroll-behavior:contain}.anchor-time-labels{display:grid;grid-template-rows:repeat(24,64px)}.anchor-time-labels>div{padding:0 8px;color:var(--text-muted);font-size:10px;text-align:right;transform:translateY(-6px)}.anchor-time-day-column{position:relative;display:grid;grid-template-rows:repeat(48,32px);min-width:0;border-left:1px solid var(--background-modifier-border);background:var(--background-primary)}.anchor-time-day-column.is-today{background:color-mix(in srgb,var(--interactive-accent) 4%,var(--background-primary))}
+.anchor-time-slot{min-width:0;min-height:32px;padding:0;border:0;border-bottom:1px solid color-mix(in srgb,var(--background-modifier-border) 58%,transparent);border-radius:0;background:transparent;box-shadow:none}.anchor-time-slot:nth-child(2n){border-bottom-color:var(--background-modifier-border)}.anchor-time-slot:hover,.anchor-time-slot:focus-visible{background:color-mix(in srgb,var(--interactive-accent) 10%,transparent)}.anchor-calendar-timed-event{position:absolute;z-index:3;display:flex;flex-direction:column;align-items:flex-start;min-height:28px;padding:5px 6px;overflow:hidden;font-size:10px}.anchor-calendar-timed-event strong,.anchor-calendar-timed-event>span:last-child{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.anchor-current-time{position:absolute;right:0;left:0;z-index:5;height:2px;pointer-events:none;background:var(--text-error)}.anchor-current-time::before{position:absolute;top:-3px;left:-4px;width:8px;height:8px;border-radius:999px;background:var(--text-error);content:""}.anchor-event-details{margin-top:16px}.anchor-event-detail{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;padding:10px 0;border-bottom:1px solid var(--background-modifier-border)}.anchor-event-detail>div{white-space:pre-wrap}
+.anchor-calendar-view button:focus-visible,.anchor-calendar-source input:focus-visible,.anchor-calendar-sidebar>summary:focus-visible{outline:2px solid var(--interactive-accent);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){.anchor-calendar-view *{scroll-behavior:auto!important;transition:none!important}}
+@media(max-width:900px){.anchor-calendar-view{padding:14px}.anchor-calendar-header{align-items:stretch;flex-direction:column}.anchor-calendar-header-controls{justify-content:flex-start}.anchor-calendar-layout{grid-template-columns:1fr}.anchor-calendar-sidebar{position:static}.anchor-calendar-sidebar>summary{display:list-item}.anchor-calendar-sidebar[open]>summary{margin-bottom:14px}}
 `;
 
-export default class HomeBasePlugin extends Plugin {
-  settings: HomeBaseSettings;
+export default class AnchorPlugin extends Plugin {
+  settings: AnchorSettings;
   private styleEl?: HTMLStyleElement;
-  private googleAccessTokens = new Map<string, { token: string; expiresAt: number }>();
   private calendarCaches = new Map<string, { state: CalendarFetchState; updatedAt: number }>();
   private calendarRequests = new Map<string, Promise<CalendarFetchState>>();
   private calendarRequestVersions = new Map<string, number>();
@@ -1279,39 +1190,39 @@ export default class HomeBasePlugin extends Plugin {
     this.injectStyles();
 
     this.registerView(
-      VIEW_TYPE_HOME_BASE,
-      (leaf) => new HomeBaseView(leaf, this)
+      VIEW_TYPE_ANCHOR,
+      (leaf) => new AnchorView(leaf, this)
     );
     this.registerView(
-      VIEW_TYPE_HOME_BASE_CALENDAR,
-      (leaf) => new HomeBaseCalendarView(leaf, this)
+      VIEW_TYPE_ANCHOR_CALENDAR,
+      (leaf) => new AnchorCalendarView(leaf, this)
     );
 
-    this.addRibbonIcon("home", "Open Home Base", () => {
+    this.addRibbonIcon("anchor", "Open Anchor", () => {
       void this.openDashboard();
     });
 
     this.addCommand({
-      id: "open-home-base",
-      name: "Open Home Base",
+      id: "open-anchor",
+      name: "Open Anchor",
       callback: () => void this.openDashboard()
     });
 
     this.addCommand({
-      id: "refresh-home-base",
-      name: "Refresh Home Base",
+      id: "refresh-anchor",
+      name: "Refresh Anchor",
       callback: () => void this.refreshDashboard()
     });
 
     this.addCommand({
-      id: "open-home-base-calendar",
-      name: "Open Home Base Calendar",
+      id: "open-anchor-calendar",
+      name: "Open Anchor Calendar",
       callback: () => void this.openCalendar()
     });
 
-    this.addSettingTab(new HomeBaseSettingTab(this.app, this));
+    this.addSettingTab(new AnchorSettingTab(this.app, this));
     await this.ensureDefaultFiles().catch((error) => {
-      console.warn("Home Base could not create one or more default files.", error);
+      console.warn("Anchor could not create one or more default files.", error);
     });
 
     if (this.settings.openOnStartup) {
@@ -1322,8 +1233,8 @@ export default class HomeBasePlugin extends Plugin {
   }
 
   onunload() {
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_HOME_BASE);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_HOME_BASE_CALENDAR);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_ANCHOR);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_ANCHOR_CALENDAR);
     this.styleEl?.remove();
   }
 
@@ -1332,18 +1243,29 @@ export default class HomeBasePlugin extends Plugin {
   }
 
   private async loadSettings() {
-    const stored = ((await this.loadData()) ?? {}) as Partial<HomeBaseSettings> & {
+    const stored = ((await this.loadData()) ?? {}) as Partial<AnchorSettings> & {
+      googleAccounts?: unknown;
       systemCalendarSnapshot?: unknown;
       systemSnapshotUpdatedAt?: unknown;
     };
     const storedSources = Array.isArray(stored.calendarSources) ? stored.calendarSources : [];
     const calendarSources = storedSources.filter((source): source is CalendarSource => {
-      return source?.provider === "icloud" || source?.provider === "google";
+      return source?.provider === "icloud";
     });
     const removedLegacyData = calendarSources.length !== storedSources.length ||
-      "systemCalendarSnapshot" in stored || "systemSnapshotUpdatedAt" in stored;
+      "googleAccounts" in stored || "systemCalendarSnapshot" in stored || "systemSnapshotUpdatedAt" in stored;
+    delete stored.googleAccounts;
     delete stored.systemCalendarSnapshot;
     delete stored.systemSnapshotUpdatedAt;
+
+    for (const secretId of [
+      "anchor-google-sync-key",
+      "anchor-google-client-secret",
+      "home-base-google-sync-key",
+      "home-base-google-client-secret"
+    ]) {
+      if (this.app.secretStorage.getSecret(secretId)) this.app.secretStorage.setSecret(secretId, "");
+    }
 
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored, { calendarSources });
     if (!calendarSources.some((source) => source.id === this.settings.defaultCalendarId && source.writable)) {
@@ -1356,7 +1278,7 @@ export default class HomeBasePlugin extends Plugin {
   }
 
   async openDashboard() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOME_BASE)[0];
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_ANCHOR)[0];
 
     if (existing) {
       this.app.workspace.revealLeaf(existing);
@@ -1365,14 +1287,14 @@ export default class HomeBasePlugin extends Plugin {
 
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({
-      type: VIEW_TYPE_HOME_BASE,
+      type: VIEW_TYPE_ANCHOR,
       active: true
     });
     this.app.workspace.revealLeaf(leaf);
   }
 
   async openCalendar() {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOME_BASE_CALENDAR)[0];
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_ANCHOR_CALENDAR)[0];
 
     if (existing) {
       this.app.workspace.revealLeaf(existing);
@@ -1381,24 +1303,24 @@ export default class HomeBasePlugin extends Plugin {
 
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({
-      type: VIEW_TYPE_HOME_BASE_CALENDAR,
+      type: VIEW_TYPE_ANCHOR_CALENDAR,
       active: true
     });
     this.app.workspace.revealLeaf(leaf);
   }
 
   async refreshDashboard(forceCalendar = true) {
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOME_BASE);
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_ANCHOR);
     for (const leaf of leaves) {
       const view = leaf.view;
-      if (view instanceof HomeBaseView) {
+      if (view instanceof AnchorView) {
         view.render(forceCalendar);
       }
     }
-    const calendarLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_HOME_BASE_CALENDAR);
+    const calendarLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_ANCHOR_CALENDAR);
     for (const leaf of calendarLeaves) {
       const view = leaf.view;
-      if (view instanceof HomeBaseCalendarView) void view.refresh(forceCalendar);
+      if (view instanceof AnchorCalendarView) void view.refresh(forceCalendar);
     }
   }
 
@@ -1463,9 +1385,8 @@ export default class HomeBasePlugin extends Plugin {
       .map((source) => `${source.id}:${source.enabled}`)
       .sort()
       .join("|");
-    const accounts = this.settings.googleAccounts.map((account) => account.id).sort().join("|");
     return [start.toISOString(), end.toISOString(), this.settings.calendarEnabled, this.settings.calendarServerUrl,
-      this.settings.calendarUsername, sources, accounts].join("::");
+      this.settings.calendarUsername, sources].join("::");
   }
 
   async fetchCalendarEvents(start: Date, end: Date): Promise<CalendarFetchState> {
@@ -1480,9 +1401,6 @@ export default class HomeBasePlugin extends Plugin {
       }
       const results = await Promise.all(calendars.map(async (calendar) => {
         try {
-          if (calendar.provider === "google") {
-            return { events: await this.fetchGoogleEvents(calendar, start, end), error: "" };
-          }
           const body = `<?xml version="1.0" encoding="utf-8" ?>
 <c:calendar-query xmlns:d="${DAV_NS}" xmlns:c="${CALDAV_NS}">
   <d:prop>
@@ -1536,11 +1454,6 @@ export default class HomeBasePlugin extends Plugin {
       return;
     }
 
-    if (calendar.provider === "google") {
-      await this.saveGoogleEvent(calendar, draft);
-      return;
-    }
-
     const uid = draft.uid || crypto.randomUUID();
     const href = draft.href || resolveRemoteUrl(calendar.href, calendarEventFileName(uid));
     const ics = draft.rawIcs ? updateExistingIcsEvent(draft.rawIcs, draft, uid) : buildNewIcsEvent(draft, uid);
@@ -1579,15 +1492,6 @@ export default class HomeBasePlugin extends Plugin {
 
   async deleteCalendarEvent(event: CalendarEvent, occurrenceOnly = false) {
     try {
-      if (event.provider === "google") {
-        const source = this.settings.calendarSources.find((calendar) => calendar.id === event.calendarId);
-        if (!source) throw new Error("Google calendar source is missing.");
-        const token = await this.getGoogleAccessToken(source.accountName);
-        await this.googleRequest(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.href)}/events/${encodeURIComponent(event.href)}`, "DELETE", token);
-        this.invalidateCalendarCache();
-        new Notice("Calendar event deleted.");
-        return;
-      }
       if (occurrenceOnly && event.repeat !== "none") {
         await this.excludeCalendarOccurrence(event);
         new Notice("Calendar occurrence deleted.");
@@ -1631,26 +1535,21 @@ export default class HomeBasePlugin extends Plugin {
   private hasCalendarConfig() {
     return Boolean(
       this.settings.calendarEnabled &&
-      (this.hasCalendarCredentials() || this.settings.googleAccounts.length)
+      this.hasCalendarCredentials()
     );
   }
 
   async getCalendars(forceDiscovery = false, allowDisabled = false): Promise<CalendarSource[]> {
-    if (!this.hasCalendarCredentials()) {
-      return this.settings.calendarSources.filter((source) => source.provider === "google");
-    }
+    if (!this.hasCalendarCredentials()) return [];
     if (!allowDisabled && !this.hasCalendarConfig()) return [];
-    if (this.settings.calendarSources.length && !forceDiscovery && (!this.hasCalendarCredentials() || this.settings.calendarSources.some((source) => source.provider === "icloud"))) {
+    if (this.settings.calendarSources.length && !forceDiscovery) {
       return this.settings.calendarSources;
     }
     const previous = new Map(this.settings.calendarSources.map((calendar) => [calendar.id, calendar]));
-    const calendars = [
-      ...(await this.discoverCalendars()).map((calendar) => ({
+    const calendars = (await this.discoverCalendars()).map((calendar) => ({
       ...calendar,
       enabled: previous.get(calendar.id)?.enabled ?? true
-      })),
-      ...this.settings.calendarSources.filter((calendar) => calendar.provider === "google")
-    ];
+    }));
     const preferred = calendars.find((calendar) => calendar.id === this.settings.defaultCalendarId && calendar.writable) ??
       calendars.find((calendar) => calendar.writable);
     this.settings.calendarSources = calendars;
@@ -1665,279 +1564,6 @@ export default class HomeBasePlugin extends Plugin {
     const calendars = await this.getCalendars();
     return calendars.find((calendar) => calendar.writable && calendar.id === (calendarId || this.settings.defaultCalendarId)) ??
       calendars.find((calendar) => calendar.writable) ?? null;
-  }
-
-  async connectGoogleAccount() {
-    if (!Platform.isDesktopApp) throw new Error("Connect Google accounts from Obsidian desktop first.");
-    const clientSecret = await this.getGoogleClientSecret();
-    const passphrase = this.app.secretStorage.getSecret(GOOGLE_SECRET_ID) || await requestGooglePassphrase(
-      this.app,
-      "Create Google sync passphrase",
-      "This passphrase encrypts your Google Calendar token in the synced plugin settings."
-    );
-    if (!passphrase) throw new Error("A sync passphrase is required.");
-    this.app.secretStorage.setSecret(GOOGLE_SECRET_ID, passphrase);
-
-    const verifier = base64Url(crypto.getRandomValues(new Uint8Array(48)));
-    const challenge = base64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
-    const state = base64Url(crypto.getRandomValues(new Uint8Array(24)));
-    const http = require("http");
-    const shell = require("electron").shell;
-    return new Promise<GoogleCalendarAccount>((resolve, reject) => {
-      let redirectUri = "";
-      let callbackStarted = false;
-      let finished = false;
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const server = http.createServer((request: any, response: any) => {
-        void (async () => {
-          if (!redirectUri) {
-            response.statusCode = 503;
-            response.end();
-            return;
-          }
-
-          const callback = new URL(request.url || "/", redirectUri);
-          if (callback.pathname !== "/") {
-            response.statusCode = callback.pathname === "/favicon.ico" ? 204 : 404;
-            response.end();
-            return;
-          }
-          if (callbackStarted || finished) {
-            response.statusCode = 204;
-            response.end();
-            return;
-          }
-          callbackStarted = true;
-
-          try {
-            if (callback.searchParams.get("state") !== state) {
-              throw new Error("Google authorization state mismatch. Start the connection again from Obsidian.");
-            }
-            const authorizationError = callback.searchParams.get("error");
-            if (authorizationError) {
-              throw new Error(authorizationError === "access_denied" ? "Google authorization was cancelled." : `Google authorization failed: ${authorizationError}.`);
-            }
-            const code = callback.searchParams.get("code");
-            if (!code) throw new Error("Google did not return an authorization code. Start the connection again.");
-
-            const account = await this.completeGoogleAuthorization(code, redirectUri, verifier, passphrase, clientSecret);
-            response.statusCode = 200;
-            response.setHeader("Content-Type", "text/html; charset=utf-8");
-            response.end(googleOAuthResultPage(true, `${account.email} and its calendars are now available in Home Base.`));
-            finish(undefined, account);
-          } catch (error) {
-            const connectionError = error instanceof Error ? error : new Error("Google Calendar connection failed.");
-            response.statusCode = 400;
-            response.setHeader("Content-Type", "text/html; charset=utf-8");
-            response.end(googleOAuthResultPage(false, connectionError.message));
-            finish(connectionError);
-          }
-        })();
-      });
-
-      const finish = (error?: Error, account?: GoogleCalendarAccount) => {
-        if (finished) return;
-        finished = true;
-        if (timeout) clearTimeout(timeout);
-        if (server.listening) server.close();
-        if (error) reject(error);
-        else if (account) resolve(account);
-      };
-
-      server.on("error", (error: Error) => finish(error));
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        if (!address || typeof address === "string") {
-          finish(new Error("Home Base could not start the local Google authorization callback."));
-          return;
-        }
-        redirectUri = `http://127.0.0.1:${address.port}`;
-        const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-        url.search = new URLSearchParams({ client_id: GOOGLE_CLIENT_ID, redirect_uri: redirectUri, response_type: "code", scope: GOOGLE_SCOPES, access_type: "offline", prompt: "consent", code_challenge: challenge, code_challenge_method: "S256", state }).toString();
-        timeout = setTimeout(() => finish(new Error("Google authorization timed out. Start the connection again from Obsidian.")), GOOGLE_OAUTH_TIMEOUT_MS);
-        void shell.openExternal(url.toString()).catch((error: Error) => finish(error));
-      });
-    });
-  }
-
-  private async completeGoogleAuthorization(code: string, redirectUri: string, verifier: string, passphrase: string, clientSecret: string) {
-    const tokenResponse = await requestUrl({
-      url: "https://oauth2.googleapis.com/token",
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: GOOGLE_CLIENT_ID, client_secret: clientSecret, code, code_verifier: verifier, redirect_uri: redirectUri, grant_type: "authorization_code" }).toString(),
-      throw: false
-    });
-    if (tokenResponse.status >= 400) throw new Error(this.googleResponseError(tokenResponse, "Google token exchange failed."));
-    const tokenData = tokenResponse.json as { access_token: string; refresh_token?: string; expires_in: number };
-    if (!tokenData.refresh_token) throw new Error("Google did not return a refresh token. Revoke Home Base access in your Google Account, then reconnect.");
-    const calendarList = await this.fetchGoogleCalendarList(tokenData.access_token);
-    const primary = calendarList.find((calendar) => calendar.primary) ?? calendarList[0];
-    if (!primary) throw new Error("No Google calendars were found.");
-    const encrypted = await encryptSecret(tokenData.refresh_token, passphrase);
-    const account: GoogleCalendarAccount = { id: primary.id, email: primary.id, encryptedRefreshToken: encrypted.encrypted, tokenSalt: encrypted.salt, tokenIv: encrypted.iv };
-    this.settings.googleAccounts = [...this.settings.googleAccounts.filter((item) => item.id !== account.id), account];
-    this.googleAccessTokens.set(account.id, { token: tokenData.access_token, expiresAt: Date.now() + tokenData.expires_in * 1000 - 60_000 });
-    await this.refreshGoogleCalendars(account, calendarList);
-    await this.saveSettings();
-    this.invalidateCalendarCache();
-    return account;
-  }
-
-  async disconnectGoogleAccount(accountId: string) {
-    this.settings.googleAccounts = this.settings.googleAccounts.filter((account) => account.id !== accountId);
-    this.settings.calendarSources = this.settings.calendarSources.filter((source) => !(source.provider === "google" && source.accountName === accountId));
-    this.googleAccessTokens.delete(accountId);
-    await this.saveSettings();
-    this.invalidateCalendarCache();
-  }
-
-  private async refreshGoogleCalendars(account: GoogleCalendarAccount, supplied?: GoogleCalendarListEntry[]) {
-    const list = supplied ?? await this.fetchGoogleCalendarList(await this.getGoogleAccessToken(account.id));
-    const previous = new Map(this.settings.calendarSources.map((source) => [source.id, source]));
-    this.settings.calendarSources = [
-      ...this.settings.calendarSources.filter((source) => source.provider !== "google" || source.accountName !== account.id),
-      ...list.map((calendar) => {
-        const id = `google:${account.id}:${calendar.id}`;
-        return { id, href: calendar.id, displayName: calendar.summaryOverride || calendar.summary, accountName: account.id, provider: "google" as const, color: calendar.backgroundColor || "#4285f4", writable: calendar.accessRole === "owner" || calendar.accessRole === "writer", enabled: previous.get(id)?.enabled ?? true };
-      })
-    ];
-  }
-
-  private async getGoogleAccessToken(accountId: string) {
-    const cached = this.googleAccessTokens.get(accountId);
-    if (cached && cached.expiresAt > Date.now()) return cached.token;
-    const account = this.settings.googleAccounts.find((item) => item.id === accountId);
-    if (!account) throw new Error("Google account is disconnected.");
-    const passphrase = this.app.secretStorage.getSecret(GOOGLE_SECRET_ID) || await requestGooglePassphrase(
-      this.app,
-      "Enter Google sync passphrase",
-      "Enter the passphrase used to encrypt this Google Calendar account."
-    );
-    if (!passphrase) throw new Error("Google sync passphrase is required.");
-    this.app.secretStorage.setSecret(GOOGLE_SECRET_ID, passphrase);
-    let refreshToken: string;
-    try {
-      refreshToken = await decryptSecret(account.encryptedRefreshToken, passphrase, account.tokenSalt, account.tokenIv);
-    } catch {
-      throw new Error("The Google sync passphrase is incorrect.");
-    }
-    const clientSecret = await this.getGoogleClientSecret();
-    const response = await requestUrl({ url: "https://oauth2.googleapis.com/token", method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: GOOGLE_CLIENT_ID, client_secret: clientSecret, refresh_token: refreshToken, grant_type: "refresh_token" }).toString(), throw: false });
-    if (response.status >= 400) throw new Error("Google authorization expired. Reconnect this account.");
-    const data = response.json as { access_token: string; expires_in: number };
-    this.googleAccessTokens.set(accountId, { token: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 - 60_000 });
-    return data.access_token;
-  }
-
-  private async getGoogleClientSecret() {
-    const stored = this.app.secretStorage.getSecret(GOOGLE_CLIENT_SECRET_ID);
-    if (stored) return stored;
-    const clientSecret = await requestGooglePassphrase(
-      this.app,
-      "Google OAuth client secret",
-      "Paste the client secret for the Anchor Desktop OAuth client. It is stored only in Obsidian SecretStorage and is never written to plugin settings.",
-      "Client secret",
-      "Paste Google OAuth client secret",
-      "Google OAuth client secret is required."
-    );
-    if (!clientSecret) throw new Error("Google OAuth client secret is required.");
-    this.app.secretStorage.setSecret(GOOGLE_CLIENT_SECRET_ID, clientSecret);
-    return clientSecret;
-  }
-
-  async replaceGoogleClientSecret() {
-    const clientSecret = await requestGooglePassphrase(
-      this.app,
-      "Replace Google OAuth client secret",
-      "Paste the active client secret for the Anchor Desktop OAuth client. The previous locally stored value will be replaced.",
-      "Client secret",
-      "Paste Google OAuth client secret",
-      "Google OAuth client secret is required."
-    );
-    if (!clientSecret) return false;
-    this.app.secretStorage.setSecret(GOOGLE_CLIENT_SECRET_ID, clientSecret);
-    this.googleAccessTokens.clear();
-    return true;
-  }
-
-  private async fetchGoogleCalendarList(token: string): Promise<GoogleCalendarListEntry[]> {
-    const data = await this.googleRequest("https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250", "GET", token) as { items?: GoogleCalendarListEntry[] };
-    return data.items ?? [];
-  }
-
-  private async fetchGoogleEvents(source: CalendarSource, start: Date, end: Date) {
-    const token = await this.getGoogleAccessToken(source.accountName);
-    const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.href)}/events`);
-    url.search = new URLSearchParams({ timeMin: start.toISOString(), timeMax: end.toISOString(), singleEvents: "true", orderBy: "startTime", maxResults: "2500" }).toString();
-    const data = await this.googleRequest(url.toString(), "GET", token) as { items?: Array<Record<string, any>> };
-    return (data.items ?? []).filter((item) => item.status !== "cancelled").map((item) => {
-      const startValue = item.start?.dateTime || item.start?.date;
-      const endValue = item.end?.dateTime || item.end?.date;
-      const allDay = Boolean(item.start?.date);
-      return {
-        uid: item.iCalUID || item.id,
-        href: item.id,
-        etag: item.etag || "",
-        title: item.summary || "",
-        start: allDay ? parseLocalDate(startValue) : new Date(startValue),
-        end: allDay ? parseLocalDate(endValue) : new Date(endValue),
-        allDay,
-        location: item.location || "",
-        notes: item.description || "",
-        repeat: "none" as RepeatFrequency,
-        repeatUntil: "",
-        exceptionDates: [],
-        rawIcs: JSON.stringify(item),
-        calendarName: source.displayName,
-        calendarId: source.id,
-        accountName: source.accountName,
-        provider: "google" as const,
-        color: source.color,
-        writable: source.writable
-      };
-    });
-  }
-
-  private async saveGoogleEvent(source: CalendarSource, draft: CalendarEventDraft) {
-    const token = await this.getGoogleAccessToken(source.accountName);
-    const dates = calendarDraftToDates(draft);
-    const payload: Record<string, any> = {
-      summary: draft.title,
-      location: draft.location || undefined,
-      description: draft.notes || undefined,
-      start: draft.allDay ? { date: draft.date } : { dateTime: dates.start.toISOString() },
-      end: draft.allDay ? { date: formatLocalDate(dates.end) } : { dateTime: dates.end.toISOString() }
-    };
-    const recurrence = formatRepeatRule(draft);
-    if (recurrence) payload.recurrence = [`RRULE:${recurrence}`];
-    const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(source.href)}/events`;
-    await this.googleRequest(draft.href ? `${base}/${encodeURIComponent(draft.href)}` : base, draft.href ? "PUT" : "POST", token, payload);
-    this.settings.defaultCalendarId = source.id;
-    await this.saveSettings();
-    this.invalidateCalendarCache();
-    new Notice("Calendar event saved.");
-  }
-
-  private async googleRequest(url: string, method: string, token: string, body?: unknown) {
-    const response = await requestUrl({
-      url,
-      method,
-      headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-      throw: false
-    });
-    if (response.status === 401) throw new Error(this.googleResponseError(response, "Google authorization expired. Reconnect this account."));
-    if (response.status === 403) throw new Error(this.googleResponseError(response, "Google Calendar permission was denied."));
-    if (response.status === 429) throw new Error("Google Calendar rate limit reached. Try again later.");
-    if (response.status >= 400) throw new Error(this.googleResponseError(response, `Google Calendar request failed with status ${response.status}.`));
-    return response.status === 204 || !response.text ? {} : response.json;
-  }
-
-  private googleResponseError(response: { status: number; json?: unknown }, fallback: string) {
-    const payload = response.json as { error_description?: string; error?: string | { message?: string } } | undefined;
-    const detail = payload?.error_description || (typeof payload?.error === "string" ? payload.error : payload?.error?.message);
-    return detail && !fallback.includes(detail) ? `${fallback} ${detail}` : fallback;
   }
 
   private async discoverCalendars(): Promise<CalendarSource[]> {
@@ -2041,7 +1667,7 @@ export default class HomeBasePlugin extends Plugin {
         throw new Error("This calendar does not allow that sync action. Choose a normal writable iCloud calendar.");
       }
       if (response.status === 409 || response.status === 412) {
-        throw new Error("This event changed remotely. Refresh Home Base and try again.");
+        throw new Error("This event changed remotely. Refresh Anchor and try again.");
       }
       if (response.status === 400) {
         throw new Error("iCloud rejected the CalDAV request as malformed. Check the server URL and try again.");
@@ -2094,32 +1720,32 @@ export default class HomeBasePlugin extends Plugin {
   private injectStyles() {
     this.styleEl?.remove();
     this.styleEl = document.createElement("style");
-    this.styleEl.id = "home-base-runtime-styles";
-    this.styleEl.textContent = HOME_BASE_STYLES + HOME_BASE_CALENDAR_STYLES;
+    this.styleEl.id = "anchor-runtime-styles";
+    this.styleEl.textContent = ANCHOR_STYLES + ANCHOR_CALENDAR_STYLES;
     document.head.appendChild(this.styleEl);
   }
 }
 
-class HomeBaseView extends ItemView {
-  private plugin: HomeBasePlugin;
+class AnchorView extends ItemView {
+  private plugin: AnchorPlugin;
   private renderGeneration = 0;
   private calendarHost?: HTMLElement;
 
-  constructor(leaf: WorkspaceLeaf, plugin: HomeBasePlugin) {
+  constructor(leaf: WorkspaceLeaf, plugin: AnchorPlugin) {
     super(leaf);
     this.plugin = plugin;
   }
 
   getViewType() {
-    return VIEW_TYPE_HOME_BASE;
+    return VIEW_TYPE_ANCHOR;
   }
 
   getDisplayText() {
-    return "Home Base";
+    return "Anchor";
   }
 
   getIcon() {
-    return "home";
+    return "anchor";
   }
 
   async onOpen() {
@@ -2135,13 +1761,13 @@ class HomeBaseView extends ItemView {
     const generation = ++this.renderGeneration;
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
-    root.addClass("home-base-view");
+    root.addClass("anchor-view");
 
     this.renderHeader(root);
 
-    const grid = root.createDiv({ cls: "home-base-grid" });
-    const left = grid.createDiv({ cls: "home-base-column home-base-left" });
-    const right = grid.createDiv({ cls: "home-base-column home-base-right" });
+    const grid = root.createDiv({ cls: "anchor-grid" });
+    const left = grid.createDiv({ cls: "anchor-column anchor-left" });
+    const right = grid.createDiv({ cls: "anchor-column anchor-right" });
     this.calendarHost = left.createDiv();
     const workoutHost = left.createDiv();
     const todoHost = right.createDiv();
@@ -2200,31 +1826,31 @@ class HomeBaseView extends ItemView {
   }
 
   private renderLoadingPanel(parent: HTMLElement, icon: string, heading: string, message: string) {
-    const panel = parent.createDiv({ cls: "home-base-panel" });
-    const title = panel.createDiv({ cls: "home-base-panel-title" });
-    title.createEl("span", { cls: "home-base-icon", text: icon });
+    const panel = parent.createDiv({ cls: "anchor-panel" });
+    const title = panel.createDiv({ cls: "anchor-panel-title" });
+    title.createEl("span", { cls: "anchor-icon", text: icon });
     title.createEl("h2", { text: heading });
-    panel.createEl("p", { cls: "home-base-muted home-base-italic", text: message });
+    panel.createEl("p", { cls: "anchor-muted anchor-italic", text: message });
   }
 
   private renderPanelError(parent: HTMLElement, icon: string, heading: string, message: string, error: unknown) {
     parent.empty();
-    const panel = parent.createDiv({ cls: "home-base-panel" });
-    const title = panel.createDiv({ cls: "home-base-panel-title" });
-    title.createEl("span", { cls: "home-base-icon", text: icon });
+    const panel = parent.createDiv({ cls: "anchor-panel" });
+    const title = panel.createDiv({ cls: "anchor-panel-title" });
+    title.createEl("span", { cls: "anchor-icon", text: icon });
     title.createEl("h2", { text: heading });
-    const errorEl = panel.createDiv({ cls: "home-base-calendar-error" });
+    const errorEl = panel.createDiv({ cls: "anchor-calendar-error" });
     errorEl.createEl("strong", { text: message });
-    errorEl.createEl("p", { text: error instanceof Error ? error.message : "Try refreshing Home Base." });
+    errorEl.createEl("p", { text: error instanceof Error ? error.message : "Try refreshing Anchor." });
   }
 
   private renderHeader(root: HTMLElement) {
-    const header = root.createDiv({ cls: "home-base-header" });
+    const header = root.createDiv({ cls: "anchor-header" });
     const date = new Date();
     const left = header.createDiv();
-    left.createEl("h1", { text: "Home Base" });
+    left.createEl("h1", { text: "Anchor" });
     left.createDiv({
-      cls: "home-base-date",
+      cls: "anchor-date",
       text: date.toLocaleDateString(undefined, {
         weekday: "long",
         year: "numeric",
@@ -2232,10 +1858,10 @@ class HomeBaseView extends ItemView {
         day: "numeric"
       })
     });
-    left.createDiv({ cls: "home-base-greeting", text: this.getGreeting() });
+    left.createDiv({ cls: "anchor-greeting", text: this.getGreeting() });
 
     const refresh = header.createEl("button", {
-      cls: "home-base-icon-button",
+      cls: "anchor-icon-button",
       attr: { "aria-label": "Refresh" }
     });
     refresh.setText("Refresh");
@@ -2243,56 +1869,56 @@ class HomeBaseView extends ItemView {
   }
 
   private renderCalendar(parent: HTMLElement, state: CalendarFetchState) {
-    const panel = parent.createDiv({ cls: "home-base-panel home-base-calendar-panel" });
-    const title = panel.createDiv({ cls: "home-base-panel-title" });
-    title.createEl("span", { cls: "home-base-icon", text: "Cal" });
+    const panel = parent.createDiv({ cls: "anchor-panel anchor-calendar-panel" });
+    const title = panel.createDiv({ cls: "anchor-panel-title" });
+    title.createEl("span", { cls: "anchor-icon", text: "Cal" });
     title.createEl("h2", { text: "Calendar" });
     if (state.sourceCount) {
-      title.createEl("span", { cls: "home-base-pill", text: `${state.sourceCount} calendar${state.sourceCount === 1 ? "" : "s"}` });
+      title.createEl("span", { cls: "anchor-pill", text: `${state.sourceCount} calendar${state.sourceCount === 1 ? "" : "s"}` });
     }
     if (state.status === "loading" || state.status === "refreshing") {
-      title.createEl("span", { cls: "home-base-pill", text: state.status === "loading" ? "Loading" : "Refreshing" });
+      title.createEl("span", { cls: "anchor-pill", text: state.status === "loading" ? "Loading" : "Refreshing" });
     }
 
-    const controls = panel.createDiv({ cls: "home-base-calendar-controls" });
-    const add = controls.createEl("button", { cls: "mod-cta home-base-primary-button", text: "+ Event" });
+    const controls = panel.createDiv({ cls: "anchor-calendar-controls" });
+    const add = controls.createEl("button", { cls: "mod-cta anchor-primary-button", text: "+ Event" });
     add.disabled = state.status === "loading" || state.setupRequired || Boolean(state.error);
     add.onClickEvent(() => {
       new CalendarEventModal(this.app, this.plugin, undefined, () => this.render(true)).open();
     });
 
-    const refresh = controls.createEl("button", { cls: "home-base-secondary-button", text: "Refresh" });
+    const refresh = controls.createEl("button", { cls: "anchor-secondary-button", text: "Refresh" });
     refresh.disabled = state.status === "loading" || state.status === "refreshing";
     refresh.onClickEvent(() => void this.refreshCalendar(true));
 
-    const openCalendar = controls.createEl("button", { cls: "home-base-secondary-button", text: "Open Calendar" });
+    const openCalendar = controls.createEl("button", { cls: "anchor-secondary-button", text: "Open Calendar" });
     openCalendar.onClickEvent(() => void this.plugin.openCalendar());
 
     if (state.status === "loading") {
-      panel.createEl("p", { cls: "home-base-muted home-base-italic", text: "Loading iCloud and Google calendars..." });
+      panel.createEl("p", { cls: "anchor-muted anchor-italic", text: "Loading iCloud calendars..." });
       return;
     }
 
     if (state.setupRequired) {
-      const setup = panel.createDiv({ cls: "home-base-schedule-empty" });
-      setup.createDiv({ cls: "home-base-calendar-mark", text: "Cal" });
+      const setup = panel.createDiv({ cls: "anchor-schedule-empty" });
+      setup.createDiv({ cls: "anchor-calendar-mark", text: "Cal" });
       const copy = setup.createDiv();
       copy.createEl("strong", { text: "Connect a calendar" });
       copy.createEl("p", {
-        text: "Enable Calendar in Home Base settings, then connect iCloud/CalDAV or Google Calendar."
+        text: "Enable Calendar in Anchor settings, then connect iCloud/CalDAV."
       });
       return;
     }
 
     if (state.error && !state.events.length) {
-      const error = panel.createDiv({ cls: "home-base-calendar-error" });
+      const error = panel.createDiv({ cls: "anchor-calendar-error" });
       error.createEl("strong", { text: "Calendar could not sync" });
       error.createEl("p", { text: state.error });
       return;
     }
 
     if (state.errors.length) {
-      const warning = panel.createDiv({ cls: "home-base-calendar-error" });
+      const warning = panel.createDiv({ cls: "anchor-calendar-error" });
       warning.createEl("strong", { text: "Some calendars could not sync" });
       warning.createEl("p", { text: state.errors.join(" · ") });
     }
@@ -2311,10 +1937,10 @@ class HomeBaseView extends ItemView {
   }
 
   private renderCalendarGroup(parent: HTMLElement, heading: string, events: CalendarEvent[], emptyText: string) {
-    const group = parent.createDiv({ cls: "home-base-calendar-group" });
+    const group = parent.createDiv({ cls: "anchor-calendar-group" });
     group.createEl("h3", { text: heading });
     if (!events.length) {
-      group.createEl("p", { cls: "home-base-muted home-base-italic", text: emptyText });
+      group.createEl("p", { cls: "anchor-muted anchor-italic", text: emptyText });
       return;
     }
 
@@ -2324,16 +1950,16 @@ class HomeBaseView extends ItemView {
   }
 
   private renderCalendarEvent(parent: HTMLElement, event: CalendarEvent) {
-    const item = parent.createDiv({ cls: "home-base-calendar-event" });
-    const time = item.createDiv({ cls: "home-base-calendar-time", text: this.formatCalendarEventTime(event) });
+    const item = parent.createDiv({ cls: "anchor-calendar-event" });
+    const time = item.createDiv({ cls: "anchor-calendar-time", text: this.formatCalendarEventTime(event) });
     if (event.allDay) time.addClass("is-all-day");
 
-    const body = item.createDiv({ cls: "home-base-calendar-body" });
-    const eventTitle = body.createDiv({ cls: "home-base-calendar-title" });
-    const color = eventTitle.createSpan({ cls: "home-base-calendar-source-dot" });
+    const body = item.createDiv({ cls: "anchor-calendar-body" });
+    const eventTitle = body.createDiv({ cls: "anchor-calendar-title" });
+    const color = eventTitle.createSpan({ cls: "anchor-calendar-source-dot" });
     color.style.backgroundColor = event.color;
     eventTitle.createSpan({ text: event.title || "Untitled event" });
-    const meta = body.createDiv({ cls: "home-base-calendar-meta" });
+    const meta = body.createDiv({ cls: "anchor-calendar-meta" });
     meta.createEl("span", { text: event.calendarName });
     if (!this.eventOccursOn(event, this.startOfDay(new Date()))) {
       meta.createEl("span", { text: this.formatCalendarDate(event.start) });
@@ -2346,10 +1972,10 @@ class HomeBaseView extends ItemView {
     }
 
     if (!event.writable) return;
-    const actions = item.createDiv({ cls: "home-base-actions" });
-    const edit = actions.createEl("button", { cls: "home-base-ghost-button", text: "Edit" });
+    const actions = item.createDiv({ cls: "anchor-actions" });
+    const edit = actions.createEl("button", { cls: "anchor-ghost-button", text: "Edit" });
     edit.onClickEvent(() => new CalendarEventModal(this.app, this.plugin, event, () => this.render(true)).open());
-    const remove = actions.createEl("button", { cls: "home-base-ghost-button", text: "Delete" });
+    const remove = actions.createEl("button", { cls: "anchor-ghost-button", text: "Delete" });
     remove.onClickEvent(async () => {
       const confirmed = confirm(`Delete "${event.title || "Untitled event"}"?`);
       if (!confirmed) return;
@@ -2360,13 +1986,13 @@ class HomeBaseView extends ItemView {
   }
 
   private renderTodos(parent: HTMLElement, todos: TodoItem[]) {
-    const panel = parent.createDiv({ cls: "home-base-panel home-base-todo-panel" });
-    const title = panel.createDiv({ cls: "home-base-panel-title home-base-todo-title" });
-    title.createEl("span", { cls: "home-base-icon", text: "Task" });
+    const panel = parent.createDiv({ cls: "anchor-panel anchor-todo-panel" });
+    const title = panel.createDiv({ cls: "anchor-panel-title anchor-todo-title" });
+    title.createEl("span", { cls: "anchor-icon", text: "Task" });
     title.createEl("h2", { text: "Todo Manager" });
 
-    const controls = panel.createDiv({ cls: "home-base-todo-controls" });
-    const newTodo = controls.createEl("button", { cls: "mod-cta home-base-primary-button", text: "+ New Todo" });
+    const controls = panel.createDiv({ cls: "anchor-todo-controls" });
+    const newTodo = controls.createEl("button", { cls: "mod-cta anchor-primary-button", text: "+ New Todo" });
     newTodo.onClickEvent(() => {
       new TodoModal(this.app, this.plugin, undefined, () => void this.render()).open();
     });
@@ -2376,11 +2002,11 @@ class HomeBaseView extends ItemView {
       const groupTodos = groups[groupName];
       if (!groupTodos.length && groupName === "Later") continue;
 
-      const group = panel.createDiv({ cls: "home-base-todo-group" });
+      const group = panel.createDiv({ cls: "anchor-todo-group" });
       group.createEl("h3", { text: groupName });
       if (!groupTodos.length) {
         group.createEl("p", {
-          cls: "home-base-muted home-base-italic",
+          cls: "anchor-muted anchor-italic",
           text: groupName === "Tomorrow" ? "No todos due tomorrow" : `No todos in ${groupName.toLowerCase()}`
         });
         continue;
@@ -2393,8 +2019,8 @@ class HomeBaseView extends ItemView {
   }
 
   private renderTodoItem(parent: HTMLElement, todo: TodoItem) {
-    const item = parent.createDiv({ cls: `home-base-todo-item ${todo.completed ? "is-complete" : ""}` });
-    const checkbox = item.createEl("input", { cls: "home-base-checkbox" });
+    const item = parent.createDiv({ cls: `anchor-todo-item ${todo.completed ? "is-complete" : ""}` });
+    const checkbox = item.createEl("input", { cls: "anchor-checkbox" });
     checkbox.type = "checkbox";
     checkbox.checked = todo.completed;
     checkbox.onClickEvent(async () => {
@@ -2402,38 +2028,38 @@ class HomeBaseView extends ItemView {
       await this.render();
     });
 
-    const body = item.createDiv({ cls: "home-base-todo-body" });
-    body.createDiv({ cls: "home-base-todo-name", text: todo.title });
+    const body = item.createDiv({ cls: "anchor-todo-body" });
+    body.createDiv({ cls: "anchor-todo-name", text: todo.title });
 
-    const meta = body.createDiv({ cls: "home-base-todo-meta" });
-    meta.createEl("span", { cls: "home-base-due", text: todo.due ? this.formatDue(todo.due) : "No due date" });
+    const meta = body.createDiv({ cls: "anchor-todo-meta" });
+    meta.createEl("span", { cls: "anchor-due", text: todo.due ? this.formatDue(todo.due) : "No due date" });
     if (todo.priority) {
-      meta.createEl("span", { cls: `home-base-priority is-${todo.priority}`, text: this.capitalize(todo.priority) });
+      meta.createEl("span", { cls: `anchor-priority is-${todo.priority}`, text: this.capitalize(todo.priority) });
     }
     for (const tag of todo.tags) {
-      meta.createEl("span", { cls: "home-base-tag", text: tag });
+      meta.createEl("span", { cls: "anchor-tag", text: tag });
     }
 
-    const actions = item.createDiv({ cls: "home-base-actions" });
-    const edit = actions.createEl("button", { cls: "home-base-ghost-button", text: "Edit" });
+    const actions = item.createDiv({ cls: "anchor-actions" });
+    const edit = actions.createEl("button", { cls: "anchor-ghost-button", text: "Edit" });
     edit.onClickEvent(() => new TodoModal(this.app, this.plugin, todo, () => void this.render()).open());
-    const remove = actions.createEl("button", { cls: "home-base-ghost-button", text: "Delete" });
+    const remove = actions.createEl("button", { cls: "anchor-ghost-button", text: "Delete" });
     remove.onClickEvent(async () => {
       await this.deleteTodo(todo);
       await this.render();
     });
   }
 
-  private renderWorkout(parent: HTMLElement, plan: WorkoutPlan, state: ReturnType<HomeBaseView["getWorkoutState"]>) {
-    const panel = parent.createDiv({ cls: "home-base-panel" });
-    const title = panel.createDiv({ cls: "home-base-panel-title" });
-    title.createEl("span", { cls: "home-base-icon", text: "Fit" });
+  private renderWorkout(parent: HTMLElement, plan: WorkoutPlan, state: ReturnType<AnchorView["getWorkoutState"]>) {
+    const panel = parent.createDiv({ cls: "anchor-panel" });
+    const title = panel.createDiv({ cls: "anchor-panel-title" });
+    title.createEl("span", { cls: "anchor-icon", text: "Fit" });
     title.createEl("h2", { text: "Workout" });
 
     if (state.unresolved) {
-      const unresolved = panel.createDiv({ cls: "home-base-unresolved" });
+      const unresolved = panel.createDiv({ cls: "anchor-unresolved" });
       unresolved.createDiv({ text: `Yesterday's workout was not resolved: ${state.unresolved.workout}` });
-      const buttons = unresolved.createDiv({ cls: "home-base-unresolved-actions" });
+      const buttons = unresolved.createDiv({ cls: "anchor-unresolved-actions" });
       const done = buttons.createEl("button", { text: "Mark Done" });
       done.onClickEvent(async () => {
         await this.appendWorkoutLog(state.unresolved!.date, state.unresolved!.workout, "done");
@@ -2451,36 +2077,36 @@ class HomeBaseView extends ItemView {
     }
 
     panel.createEl("h3", { text: "Today's Workout" });
-    panel.createEl("div", { cls: "home-base-workout-name", text: state.todayWorkout });
+    panel.createEl("div", { cls: "anchor-workout-name", text: state.todayWorkout });
 
     const exercises = plan.types[state.todayWorkout] ?? [];
     if (exercises.length) {
-      const list = panel.createEl("ul", { cls: "home-base-exercises" });
+      const list = panel.createEl("ul", { cls: "anchor-exercises" });
       for (const exercise of exercises) {
         list.createEl("li", { text: exercise });
       }
     } else {
-      panel.createEl("p", { cls: "home-base-muted", text: "No exercises configured for this workout." });
+      panel.createEl("p", { cls: "anchor-muted", text: "No exercises configured for this workout." });
     }
 
-    const edit = panel.createEl("button", { cls: "home-base-wide-button", text: "Edit Routine" });
+    const edit = panel.createEl("button", { cls: "anchor-wide-button", text: "Edit Routine" });
     edit.onClickEvent(() => {
       new WorkoutRoutineModal(this.app, this.plugin, plan, () => void this.render()).open();
     });
 
-    const actions = panel.createDiv({ cls: "home-base-workout-actions" });
-    const done = actions.createEl("button", { cls: "mod-cta home-base-primary-button", text: "Done" });
+    const actions = panel.createDiv({ cls: "anchor-workout-actions" });
+    const done = actions.createEl("button", { cls: "mod-cta anchor-primary-button", text: "Done" });
     done.onClickEvent(async () => {
       await this.appendWorkoutLog(this.todayKey(), state.todayWorkout, "done");
       await this.render();
     });
-    const skip = actions.createEl("button", { cls: "home-base-secondary-button", text: "Skip" });
+    const skip = actions.createEl("button", { cls: "anchor-secondary-button", text: "Skip" });
     skip.onClickEvent(async () => {
       await this.appendWorkoutLog(this.todayKey(), state.todayWorkout, "skipped");
       await this.render();
     });
 
-    const sequence = panel.createDiv({ cls: "home-base-sequence" });
+    const sequence = panel.createDiv({ cls: "anchor-sequence" });
     sequence.createEl("h3", { text: "Routine Sequence" });
     sequence.createDiv({ text: plan.sequence.length ? plan.sequence.join(" > ") : "No sequence configured" });
   }
@@ -2745,23 +2371,23 @@ class HomeBaseView extends ItemView {
   }
 }
 
-class HomeBaseCalendarView extends ItemView {
-  private plugin: HomeBasePlugin;
+class AnchorCalendarView extends ItemView {
+  private plugin: AnchorPlugin;
   private mode: CalendarViewMode = "month";
   private selectedDate = this.startOfDay(new Date());
   private renderGeneration = 0;
 
-  constructor(leaf: WorkspaceLeaf, plugin: HomeBasePlugin) {
+  constructor(leaf: WorkspaceLeaf, plugin: AnchorPlugin) {
     super(leaf);
     this.plugin = plugin;
   }
 
   getViewType() {
-    return VIEW_TYPE_HOME_BASE_CALENDAR;
+    return VIEW_TYPE_ANCHOR_CALENDAR;
   }
 
   getDisplayText() {
-    return "Home Base Calendar";
+    return "Anchor Calendar";
   }
 
   getIcon() {
@@ -2803,35 +2429,35 @@ class HomeBaseCalendarView extends ItemView {
   private render(state: CalendarFetchState) {
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
-    root.addClass("home-base-calendar-view");
+    root.addClass("anchor-calendar-view");
     this.renderHeader(root, state);
 
-    const layout = root.createDiv({ cls: "home-base-calendar-layout" });
+    const layout = root.createDiv({ cls: "anchor-calendar-layout" });
     this.renderSidebar(layout);
-    const main = layout.createDiv({ cls: "home-base-calendar-main" });
+    const main = layout.createDiv({ cls: "anchor-calendar-main" });
 
     if (state.setupRequired) {
-      const empty = main.createDiv({ cls: "home-base-calendar-empty" });
+      const empty = main.createDiv({ cls: "anchor-calendar-empty" });
       empty.createEl("h2", { text: "Connect a calendar" });
-      empty.createEl("p", { text: "Enable Calendar in Home Base settings, then connect iCloud/CalDAV or Google Calendar." });
+      empty.createEl("p", { text: "Enable Calendar in Anchor settings, then connect iCloud/CalDAV." });
       return;
     }
 
     if (state.error && !state.events.length) {
-      const error = main.createDiv({ cls: "home-base-calendar-error" });
+      const error = main.createDiv({ cls: "anchor-calendar-error" });
       error.createEl("strong", { text: "Calendar could not sync" });
       error.createEl("p", { text: state.error });
       return;
     }
 
     if (state.errors.length) {
-      const warning = main.createDiv({ cls: "home-base-calendar-error" });
+      const warning = main.createDiv({ cls: "anchor-calendar-error" });
       warning.createEl("strong", { text: "Some calendars could not sync" });
       warning.createEl("p", { text: state.errors.join(" · ") });
     }
 
     if (state.status === "loading" && !state.events.length) {
-      main.createDiv({ cls: "home-base-calendar-loading", text: "Loading iCloud and Google calendars…" });
+      main.createDiv({ cls: "anchor-calendar-loading", text: "Loading iCloud calendars…" });
     }
 
     if (this.mode === "month") this.renderMonth(main, state.events);
@@ -2839,27 +2465,27 @@ class HomeBaseCalendarView extends ItemView {
   }
 
   private renderHeader(root: HTMLElement, state: CalendarFetchState) {
-    const header = root.createDiv({ cls: "home-base-calendar-header" });
-    const titleGroup = header.createDiv({ cls: "home-base-calendar-heading" });
+    const header = root.createDiv({ cls: "anchor-calendar-header" });
+    const titleGroup = header.createDiv({ cls: "anchor-calendar-heading" });
     titleGroup.createEl("h1", { text: this.rangeTitle() });
-    const meta = titleGroup.createDiv({ cls: "home-base-calendar-heading-meta" });
-    meta.createSpan({ text: "Home Base Calendar" });
+    const meta = titleGroup.createDiv({ cls: "anchor-calendar-heading-meta" });
+    meta.createSpan({ text: "Anchor Calendar" });
     if (state.sourceCount) meta.createSpan({ text: `${state.sourceCount} visible` });
     if (state.status === "loading" || state.status === "refreshing") {
-      meta.createSpan({ cls: "home-base-pill", text: state.status === "loading" ? "Loading" : "Refreshing" });
+      meta.createSpan({ cls: "anchor-pill", text: state.status === "loading" ? "Loading" : "Refreshing" });
     }
 
-    const controls = header.createDiv({ cls: "home-base-calendar-header-controls" });
-    const navigation = controls.createDiv({ cls: "home-base-calendar-navigation" });
+    const controls = header.createDiv({ cls: "anchor-calendar-header-controls" });
+    const navigation = controls.createDiv({ cls: "anchor-calendar-navigation" });
     this.iconButton(navigation, "chevron-left", "Previous period", () => this.navigate(-1));
-    const today = navigation.createEl("button", { cls: "home-base-secondary-button", text: "Today" });
+    const today = navigation.createEl("button", { cls: "anchor-secondary-button", text: "Today" });
     today.onClickEvent(() => {
       this.selectedDate = this.startOfDay(new Date());
       void this.refresh(false);
     });
     this.iconButton(navigation, "chevron-right", "Next period", () => this.navigate(1));
 
-    const modes = controls.createDiv({ cls: "home-base-calendar-mode-switch", attr: { role: "group", "aria-label": "Calendar view" } });
+    const modes = controls.createDiv({ cls: "anchor-calendar-mode-switch", attr: { role: "group", "aria-label": "Calendar view" } });
     for (const mode of ["month", "week", "day"] as CalendarViewMode[]) {
       const button = modes.createEl("button", {
         text: mode.charAt(0).toUpperCase() + mode.slice(1),
@@ -2873,70 +2499,64 @@ class HomeBaseCalendarView extends ItemView {
       });
     }
 
-    const actions = controls.createDiv({ cls: "home-base-calendar-header-actions" });
-    const refresh = actions.createEl("button", { cls: "home-base-secondary-button", text: "Refresh" });
+    const actions = controls.createDiv({ cls: "anchor-calendar-header-actions" });
+    const refresh = actions.createEl("button", { cls: "anchor-secondary-button", text: "Refresh" });
     refresh.disabled = state.status === "loading" || state.status === "refreshing";
     refresh.onClickEvent(() => void this.refresh(true));
-    const add = actions.createEl("button", { cls: "mod-cta home-base-primary-button", text: "+ Event" });
+    const add = actions.createEl("button", { cls: "mod-cta anchor-primary-button", text: "+ Event" });
     add.disabled = !this.plugin.settings.calendarSources.some((source) => source.writable);
     add.onClickEvent(() => this.openNewEvent(this.defaultNewEventDate(), false));
   }
 
   private renderSidebar(parent: HTMLElement) {
-    const sidebar = parent.createEl("details", { cls: "home-base-calendar-sidebar" });
+    const sidebar = parent.createEl("details", { cls: "anchor-calendar-sidebar" });
     sidebar.open = true;
     sidebar.createEl("summary", { text: "Calendars" });
-    const content = sidebar.createDiv({ cls: "home-base-calendar-sidebar-content" });
-    const providers: Array<{ provider: CalendarProvider; label: string }> = [
-      { provider: "icloud", label: "iCloud" },
-      { provider: "google", label: "Google" }
-    ];
-
-    for (const { provider, label } of providers) {
-      const calendars = this.plugin.settings.calendarSources.filter((source) => source.provider === provider);
-      if (!calendars.length) continue;
-      const group = content.createDiv({ cls: "home-base-calendar-provider" });
-      const heading = group.createDiv({ cls: "home-base-calendar-provider-title" });
+    const content = sidebar.createDiv({ cls: "anchor-calendar-sidebar-content" });
+    const calendars = this.plugin.settings.calendarSources;
+    if (calendars.length) {
+      const group = content.createDiv({ cls: "anchor-calendar-provider" });
+      const heading = group.createDiv({ cls: "anchor-calendar-provider-title" });
       const providerIcon = heading.createSpan();
-      setIcon(providerIcon, provider === "icloud" ? "cloud" : "calendar-days");
-      heading.createEl("h2", { text: label });
+      setIcon(providerIcon, "cloud");
+      heading.createEl("h2", { text: "iCloud" });
       for (const calendar of calendars) {
-        const row = group.createEl("label", { cls: "home-base-calendar-source" });
+        const row = group.createEl("label", { cls: "anchor-calendar-source" });
         const checkbox = row.createEl("input", {
-          attr: { type: "checkbox", "aria-label": `Show ${calendar.displayName} from ${label}` }
+          attr: { type: "checkbox", "aria-label": `Show ${calendar.displayName} from iCloud` }
         });
         checkbox.checked = calendar.enabled;
-        const dot = row.createSpan({ cls: "home-base-calendar-source-dot" });
+        const dot = row.createSpan({ cls: "anchor-calendar-source-dot" });
         dot.style.backgroundColor = calendar.color;
-        const copy = row.createSpan({ cls: "home-base-calendar-source-copy" });
-        copy.createSpan({ cls: "home-base-calendar-source-name", text: calendar.displayName });
-        copy.createSpan({ cls: "home-base-calendar-source-account", text: `${calendar.accountName || label} · ${calendar.writable ? "Writable" : "Read only"}` });
+        const copy = row.createSpan({ cls: "anchor-calendar-source-copy" });
+        copy.createSpan({ cls: "anchor-calendar-source-name", text: calendar.displayName });
+        copy.createSpan({ cls: "anchor-calendar-source-account", text: `${calendar.accountName || "iCloud"} · ${calendar.writable ? "Writable" : "Read only"}` });
         checkbox.addEventListener("change", () => void this.plugin.setCalendarEnabled(calendar.id, checkbox.checked));
       }
     }
 
     if (!this.plugin.settings.calendarSources.length) {
-      content.createEl("p", { cls: "home-base-muted", text: "No calendars discovered yet." });
+      content.createEl("p", { cls: "anchor-muted", text: "No calendars discovered yet." });
     }
   }
 
   private renderMonth(parent: HTMLElement, events: CalendarEvent[]) {
-    const month = parent.createDiv({ cls: "home-base-month-calendar" });
-    const weekdays = month.createDiv({ cls: "home-base-month-weekdays" });
+    const month = parent.createDiv({ cls: "anchor-month-calendar" });
+    const weekdays = month.createDiv({ cls: "anchor-month-weekdays" });
     for (const label of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
       weekdays.createDiv({ text: label });
     }
-    const grid = month.createDiv({ cls: "home-base-month-grid", attr: { role: "grid", "aria-label": this.rangeTitle() } });
+    const grid = month.createDiv({ cls: "anchor-month-grid", attr: { role: "grid", "aria-label": this.rangeTitle() } });
     const { start, end } = this.visibleRange();
     for (let date = new Date(start); date < end; date = this.addDays(date, 1)) {
       const day = new Date(date);
       const isCurrentMonth = day.getMonth() === this.selectedDate.getMonth();
       const isToday = this.sameDay(day, new Date());
       const cell = grid.createDiv({
-        cls: `home-base-month-day${isCurrentMonth ? "" : " is-outside"}${isToday ? " is-today" : ""}`,
+        cls: `anchor-month-day${isCurrentMonth ? "" : " is-outside"}${isToday ? " is-today" : ""}`,
         attr: { role: "gridcell", tabindex: "0", "aria-label": day.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) }
       });
-      const dayNumber = cell.createEl("button", { cls: "home-base-month-day-number", text: String(day.getDate()), attr: { "aria-label": `Create event on ${this.fullDate(day)}` } });
+      const dayNumber = cell.createEl("button", { cls: "anchor-month-day-number", text: String(day.getDate()), attr: { "aria-label": `Create event on ${this.fullDate(day)}` } });
       dayNumber.onClickEvent(() => this.openNewEvent(this.dateAt(day, 9, 0), false));
       cell.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
@@ -2944,10 +2564,10 @@ class HomeBaseCalendarView extends ItemView {
         this.openNewEvent(this.dateAt(day, 9, 0), false);
       });
       const dayEvents = events.filter((event) => this.eventOccursOn(event, day)).sort((a, b) => this.compareEvents(a, b));
-      const list = cell.createDiv({ cls: "home-base-month-events" });
+      const list = cell.createDiv({ cls: "anchor-month-events" });
       for (const event of dayEvents.slice(0, 3)) this.renderMonthEvent(list, event, day);
       if (dayEvents.length > 3) {
-        const more = list.createEl("button", { cls: "home-base-month-more", text: `+${dayEvents.length - 3} more`, attr: { "aria-label": `Show all events on ${this.fullDate(day)}` } });
+        const more = list.createEl("button", { cls: "anchor-month-more", text: `+${dayEvents.length - 3} more`, attr: { "aria-label": `Show all events on ${this.fullDate(day)}` } });
         more.onClickEvent((click) => {
           click.stopPropagation();
           this.selectedDate = day;
@@ -2964,13 +2584,13 @@ class HomeBaseCalendarView extends ItemView {
   private renderMonthEvent(parent: HTMLElement, event: CalendarEvent, day: Date) {
     const time = event.allDay || !this.sameDay(event.start, event.end) ? "" : event.start.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     const button = parent.createEl("button", {
-      cls: "home-base-month-event",
+      cls: "anchor-month-event",
       attr: { "aria-label": this.eventAriaLabel(event), title: this.eventAriaLabel(event) }
     });
-    button.style.setProperty("--home-base-event-color", event.color);
-    button.createSpan({ cls: "home-base-month-event-provider", text: event.provider === "icloud" ? "iCloud" : "Google" });
-    if (time && this.sameDay(event.start, day)) button.createSpan({ cls: "home-base-month-event-time", text: time });
-    button.createSpan({ cls: "home-base-month-event-title", text: event.title || "Untitled event" });
+    button.style.setProperty("--anchor-event-color", event.color);
+    button.createSpan({ cls: "anchor-month-event-provider", text: "iCloud" });
+    if (time && this.sameDay(event.start, day)) button.createSpan({ cls: "anchor-month-event-time", text: time });
+    button.createSpan({ cls: "anchor-month-event-title", text: event.title || "Untitled event" });
     button.onClickEvent((click) => {
       click.stopPropagation();
       this.openEvent(event);
@@ -2981,13 +2601,13 @@ class HomeBaseCalendarView extends ItemView {
     const { start, end } = this.visibleRange();
     const days: Date[] = [];
     for (let date = new Date(start); date < end; date = this.addDays(date, 1)) days.push(new Date(date));
-    const shell = parent.createDiv({ cls: `home-base-time-calendar is-${this.mode}` });
-    const header = shell.createDiv({ cls: "home-base-time-calendar-header" });
-    header.createDiv({ cls: "home-base-time-gutter" });
-    const dayHeaders = header.createDiv({ cls: "home-base-time-day-headers" });
-    dayHeaders.style.setProperty("--home-base-calendar-days", String(days.length));
+    const shell = parent.createDiv({ cls: `anchor-time-calendar is-${this.mode}` });
+    const header = shell.createDiv({ cls: "anchor-time-calendar-header" });
+    header.createDiv({ cls: "anchor-time-gutter" });
+    const dayHeaders = header.createDiv({ cls: "anchor-time-day-headers" });
+    dayHeaders.style.setProperty("--anchor-calendar-days", String(days.length));
     for (const day of days) {
-      const button = dayHeaders.createEl("button", { cls: `home-base-time-day-header${this.sameDay(day, new Date()) ? " is-today" : ""}` });
+      const button = dayHeaders.createEl("button", { cls: `anchor-time-day-header${this.sameDay(day, new Date()) ? " is-today" : ""}` });
       button.createSpan({ text: day.toLocaleDateString(undefined, { weekday: "short" }) });
       button.createEl("strong", { text: day.toLocaleDateString(undefined, { month: "short", day: "numeric" }) });
       button.onClickEvent(() => {
@@ -2997,12 +2617,12 @@ class HomeBaseCalendarView extends ItemView {
       });
     }
 
-    const allDay = shell.createDiv({ cls: "home-base-all-day-row" });
-    allDay.createDiv({ cls: "home-base-time-gutter", text: "all-day" });
-    const allDayColumns = allDay.createDiv({ cls: "home-base-all-day-columns" });
-    allDayColumns.style.setProperty("--home-base-calendar-days", String(days.length));
+    const allDay = shell.createDiv({ cls: "anchor-all-day-row" });
+    allDay.createDiv({ cls: "anchor-time-gutter", text: "all-day" });
+    const allDayColumns = allDay.createDiv({ cls: "anchor-all-day-columns" });
+    allDayColumns.style.setProperty("--anchor-calendar-days", String(days.length));
     for (const day of days) {
-      const column = allDayColumns.createDiv({ cls: "home-base-all-day-column" });
+      const column = allDayColumns.createDiv({ cls: "anchor-all-day-column" });
       column.setAttribute("aria-label", `All-day events on ${this.fullDate(day)}`);
       column.addEventListener("click", (click) => {
         if (click.target === column) this.openNewEvent(this.dateAt(day, 0, 0), true);
@@ -3011,13 +2631,13 @@ class HomeBaseCalendarView extends ItemView {
       for (const event of dayEvents) this.renderAllDayEvent(column, event);
     }
 
-    const scroll = shell.createDiv({ cls: "home-base-calendar-time-scroll" });
-    const timeLabels = scroll.createDiv({ cls: "home-base-time-labels" });
+    const scroll = shell.createDiv({ cls: "anchor-calendar-time-scroll" });
+    const timeLabels = scroll.createDiv({ cls: "anchor-time-labels" });
     for (let hour = 0; hour < 24; hour += 1) {
       timeLabels.createDiv({ text: new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: "numeric" }) });
     }
-    const columns = scroll.createDiv({ cls: "home-base-time-columns" });
-    columns.style.setProperty("--home-base-calendar-days", String(days.length));
+    const columns = scroll.createDiv({ cls: "anchor-time-columns" });
+    columns.style.setProperty("--anchor-calendar-days", String(days.length));
     for (const day of days) this.renderTimeColumn(columns, day, events);
     window.requestAnimationFrame(() => {
       const targetHour = this.sameDay(this.selectedDate, new Date()) ? Math.max(0, new Date().getHours() - 2) : 8;
@@ -3026,9 +2646,9 @@ class HomeBaseCalendarView extends ItemView {
   }
 
   private renderAllDayEvent(parent: HTMLElement, event: CalendarEvent) {
-    const button = parent.createEl("button", { cls: "home-base-all-day-event", attr: { title: this.eventAriaLabel(event), "aria-label": this.eventAriaLabel(event) } });
-    button.style.setProperty("--home-base-event-color", event.color);
-    button.createSpan({ cls: "home-base-calendar-provider-tag", text: event.provider === "icloud" ? "iCloud" : "Google" });
+    const button = parent.createEl("button", { cls: "anchor-all-day-event", attr: { title: this.eventAriaLabel(event), "aria-label": this.eventAriaLabel(event) } });
+    button.style.setProperty("--anchor-event-color", event.color);
+    button.createSpan({ cls: "anchor-calendar-provider-tag", text: "iCloud" });
     button.createSpan({ text: event.title || "Untitled event" });
     button.onClickEvent((click) => {
       click.stopPropagation();
@@ -3037,12 +2657,12 @@ class HomeBaseCalendarView extends ItemView {
   }
 
   private renderTimeColumn(parent: HTMLElement, day: Date, events: CalendarEvent[]) {
-    const column = parent.createDiv({ cls: `home-base-time-day-column${this.sameDay(day, new Date()) ? " is-today" : ""}` });
+    const column = parent.createDiv({ cls: `anchor-time-day-column${this.sameDay(day, new Date()) ? " is-today" : ""}` });
     for (let slot = 0; slot < 48; slot += 1) {
       const hour = Math.floor(slot / 2);
       const minute = slot % 2 ? 30 : 0;
       const button = column.createEl("button", {
-        cls: "home-base-time-slot",
+        cls: "anchor-time-slot",
         attr: { "aria-label": `Create event on ${this.fullDate(day)} at ${this.timeLabel(hour, minute)}` }
       });
       button.onClickEvent(() => this.openNewEvent(this.dateAt(day, hour, minute), false));
@@ -3050,13 +2670,13 @@ class HomeBaseCalendarView extends ItemView {
 
     const layouts = this.layoutTimedEvents(events.filter((event) => !this.isAllDayLaneEvent(event) && this.eventOccursOn(event, day)), day);
     for (const layout of layouts) {
-      const button = column.createEl("button", { cls: "home-base-calendar-timed-event", attr: { title: this.eventAriaLabel(layout.event), "aria-label": this.eventAriaLabel(layout.event) } });
-      button.style.setProperty("--home-base-event-color", layout.event.color);
+      const button = column.createEl("button", { cls: "anchor-calendar-timed-event", attr: { title: this.eventAriaLabel(layout.event), "aria-label": this.eventAriaLabel(layout.event) } });
+      button.style.setProperty("--anchor-event-color", layout.event.color);
       button.style.top = `${layout.start / 1_440 * 100}%`;
       button.style.height = `${Math.max(2.2, (layout.end - layout.start) / 1_440 * 100)}%`;
       button.style.left = `calc(${layout.column / layout.columns * 100}% + 3px)`;
       button.style.width = `calc(${100 / layout.columns}% - 6px)`;
-      button.createSpan({ cls: "home-base-calendar-provider-tag", text: layout.event.provider === "icloud" ? "iCloud" : "Google" });
+      button.createSpan({ cls: "anchor-calendar-provider-tag", text: "iCloud" });
       button.createEl("strong", { text: layout.event.title || "Untitled event" });
       button.createSpan({ text: this.eventTime(layout.event) });
       button.onClickEvent((click) => {
@@ -3068,7 +2688,7 @@ class HomeBaseCalendarView extends ItemView {
     if (this.sameDay(day, new Date())) {
       const now = new Date();
       const minutes = now.getHours() * 60 + now.getMinutes();
-      const line = column.createDiv({ cls: "home-base-current-time" });
+      const line = column.createDiv({ cls: "anchor-current-time" });
       line.style.top = `${minutes / 1_440 * 100}%`;
     }
   }
@@ -3145,7 +2765,7 @@ class HomeBaseCalendarView extends ItemView {
   }
 
   private iconButton(parent: HTMLElement, iconName: string, label: string, action: () => void) {
-    const button = parent.createEl("button", { cls: "home-base-calendar-nav-button", attr: { "aria-label": label, title: label } });
+    const button = parent.createEl("button", { cls: "anchor-calendar-nav-button", attr: { "aria-label": label, title: label } });
     setIcon(button, iconName);
     button.onClickEvent(action);
   }
@@ -3179,8 +2799,7 @@ class HomeBaseCalendarView extends ItemView {
   }
 
   private eventAriaLabel(event: CalendarEvent) {
-    const provider = event.provider === "icloud" ? "iCloud" : "Google";
-    return `${event.title || "Untitled event"}, ${this.eventTime(event)}, ${event.calendarName}, ${provider}${event.writable ? "" : ", read only"}`;
+    return `${event.title || "Untitled event"}, ${this.eventTime(event)}, ${event.calendarName}, iCloud${event.writable ? "" : ", read only"}`;
   }
 
   private eventTime(event: CalendarEvent) {
@@ -3217,99 +2836,8 @@ class HomeBaseCalendarView extends ItemView {
   }
 }
 
-function requestGooglePassphrase(
-  app: App,
-  title: string,
-  description: string,
-  fieldName = "Passphrase",
-  placeholder = "Enter passphrase",
-  requiredMessage = "Google sync passphrase is required."
-) {
-  return new Promise<string | null>((resolve) => {
-    new GooglePassphraseModal(app, title, description, fieldName, placeholder, requiredMessage, resolve).open();
-  });
-}
-
-class GooglePassphraseModal extends Modal {
-  private value = "";
-  private settled = false;
-
-  constructor(
-    app: App,
-    private readonly title: string,
-    private readonly description: string,
-    private readonly fieldName: string,
-    private readonly placeholder: string,
-    private readonly requiredMessage: string,
-    private readonly resolvePassphrase: (value: string | null) => void
-  ) {
-    super(app);
-  }
-
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("home-base-modal");
-    contentEl.createEl("h2", { text: this.title });
-    contentEl.createEl("p", { cls: "home-base-muted", text: this.description });
-
-    new Setting(contentEl)
-      .setName(this.fieldName)
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text.inputEl.autocomplete = "current-password";
-        text.setPlaceholder(this.placeholder);
-        text.onChange((value) => {
-          this.value = value;
-        });
-        text.inputEl.addEventListener("keydown", (event) => {
-          if (event.key !== "Enter") return;
-          event.preventDefault();
-          this.submit();
-        });
-        window.setTimeout(() => text.inputEl.focus(), 0);
-      });
-
-    new Setting(contentEl)
-      .addButton((button) => {
-        button
-          .setButtonText("Cancel")
-          .onClick(() => this.finish(null));
-      })
-      .addButton((button) => {
-        button
-          .setButtonText("Continue")
-          .setCta()
-          .onClick(() => this.submit());
-      });
-  }
-
-  onClose() {
-    this.contentEl.empty();
-    if (!this.settled) {
-      this.settled = true;
-      this.resolvePassphrase(null);
-    }
-  }
-
-  private submit() {
-    if (!this.value) {
-      new Notice(this.requiredMessage);
-      return;
-    }
-    this.finish(this.value);
-  }
-
-  private finish(value: string | null) {
-    if (this.settled) return;
-    this.settled = true;
-    this.resolvePassphrase(value);
-    this.close();
-  }
-}
-
 class TodoModal extends Modal {
-  private plugin: HomeBasePlugin;
+  private plugin: AnchorPlugin;
   private todo?: TodoItem;
   private onSave: () => void;
   private titleValue = "";
@@ -3317,7 +2845,7 @@ class TodoModal extends Modal {
   private priorityValue: Priority = "medium";
   private tagsValue = "";
 
-  constructor(app: App, plugin: HomeBasePlugin, todo: TodoItem | undefined, onSave: () => void) {
+  constructor(app: App, plugin: AnchorPlugin, todo: TodoItem | undefined, onSave: () => void) {
     super(app);
     this.plugin = plugin;
     this.todo = todo;
@@ -3334,7 +2862,7 @@ class TodoModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.addClass("home-base-modal");
+    contentEl.addClass("anchor-modal");
     contentEl.createEl("h2", { text: this.todo ? "Edit Todo" : "New Todo" });
 
     new Setting(contentEl)
@@ -3433,7 +2961,7 @@ class TodoModal extends Modal {
 }
 
 class CalendarEventModal extends Modal {
-  private plugin: HomeBasePlugin;
+  private plugin: AnchorPlugin;
   private event?: CalendarEvent;
   private onSave: () => void;
   private titleValue = "";
@@ -3469,7 +2997,7 @@ class CalendarEventModal extends Modal {
   };
   private timePickerResizeHandler = () => this.positionTimePicker();
 
-  constructor(app: App, plugin: HomeBasePlugin, event: CalendarEvent | undefined, onSave: () => void, options: CalendarEventModalOptions = {}) {
+  constructor(app: App, plugin: AnchorPlugin, event: CalendarEvent | undefined, onSave: () => void, options: CalendarEventModalOptions = {}) {
     super(app);
     this.plugin = plugin;
     this.event = event;
@@ -3511,7 +3039,7 @@ class CalendarEventModal extends Modal {
     this.closeTimePicker();
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.addClass("home-base-modal");
+    contentEl.addClass("anchor-modal");
     if (this.readOnly && this.event) {
       this.renderReadOnlyEvent(contentEl, this.event);
       return;
@@ -3617,7 +3145,7 @@ class CalendarEventModal extends Modal {
         });
       });
 
-    const footer = contentEl.createDiv({ cls: "home-base-modal-footer" });
+    const footer = contentEl.createDiv({ cls: "anchor-modal-footer" });
     if (this.event) {
       const remove = footer.createEl("button", { text: "Delete" });
       remove.onClickEvent(() => void this.deleteEvent());
@@ -3630,22 +3158,21 @@ class CalendarEventModal extends Modal {
 
   private renderReadOnlyEvent(contentEl: HTMLElement, event: CalendarEvent) {
     contentEl.createEl("h2", { text: event.title || "Untitled event" });
-    const provider = event.provider === "icloud" ? "iCloud" : "Google";
-    const details = contentEl.createDiv({ cls: "home-base-event-details" });
+    const details = contentEl.createDiv({ cls: "anchor-event-details" });
     const addDetail = (label: string, value: string) => {
       if (!value) return;
-      const row = details.createDiv({ cls: "home-base-event-detail" });
+      const row = details.createDiv({ cls: "anchor-event-detail" });
       row.createEl("strong", { text: label });
       row.createDiv({ text: value });
     };
-    addDetail("Calendar", `${event.calendarName} · ${provider}`);
+    addDetail("Calendar", `${event.calendarName} · iCloud`);
     addDetail("Account", event.accountName);
     addDetail("When", this.readOnlyEventTime(event));
     addDetail("Location", event.location);
     addDetail("Repeat", event.repeat === "none" ? "Does not repeat" : event.repeat);
     addDetail("Notes", event.notes);
-    details.createEl("p", { cls: "home-base-muted", text: "This calendar is read only in Home Base." });
-    const footer = contentEl.createDiv({ cls: "home-base-modal-footer" });
+    details.createEl("p", { cls: "anchor-muted", text: "This calendar is read only in Anchor." });
+    const footer = contentEl.createDiv({ cls: "anchor-modal-footer" });
     const close = footer.createEl("button", { cls: "mod-cta", text: "Close" });
     close.onClickEvent(() => this.close());
   }
@@ -3660,11 +3187,11 @@ class CalendarEventModal extends Modal {
 
   private renderTimeSetting(parent: HTMLElement, label: string, kind: TimePickerKind) {
     const setting = new Setting(parent).setName(label);
-    setting.settingEl.addClass("home-base-time-setting");
-    const field = setting.controlEl.createDiv({ cls: "home-base-time-field" });
-    const wrap = field.createDiv({ cls: "home-base-time-input-wrap" });
+    setting.settingEl.addClass("anchor-time-setting");
+    const field = setting.controlEl.createDiv({ cls: "anchor-time-field" });
+    const wrap = field.createDiv({ cls: "anchor-time-input-wrap" });
     const input = wrap.createEl("input", {
-      cls: "home-base-time-input",
+      cls: "anchor-time-input",
       attr: {
         type: "text",
         readonly: "true",
@@ -3674,7 +3201,7 @@ class CalendarEventModal extends Modal {
       }
     });
     input.value = this.formatDisplayTime(this.timeValueFor(kind));
-    const icon = wrap.createSpan({ cls: "home-base-time-icon" });
+    const icon = wrap.createSpan({ cls: "anchor-time-icon" });
     setIcon(icon, "clock");
 
     input.addEventListener("click", (event) => {
@@ -3703,7 +3230,7 @@ class CalendarEventModal extends Modal {
     this.activeTimeField = field;
     this.activeTimeInput = input;
     input.setAttribute("aria-expanded", "true");
-    const popover = field.createDiv({ cls: "home-base-time-popover" });
+    const popover = field.createDiv({ cls: "anchor-time-popover" });
     popover.setAttribute("role", "dialog");
     popover.setAttribute("aria-label", `${kind === "start" ? "Start" : "End"} time picker`);
     this.timePickerPopover = popover;
@@ -3735,23 +3262,23 @@ class CalendarEventModal extends Modal {
     const parts = this.parseTimeParts(this.timeValueFor(kind));
     popover.empty();
     this.renderTimeColumn(popover, kind, "hour", parts.hour12);
-    popover.createDiv({ cls: "home-base-time-divider" });
+    popover.createDiv({ cls: "anchor-time-divider" });
     this.renderTimeColumn(popover, kind, "minute", String(parts.minute).padStart(2, "0"));
-    popover.createDiv({ cls: "home-base-time-divider" });
-    const period = popover.createDiv({ cls: "home-base-period-column" });
+    popover.createDiv({ cls: "anchor-time-divider" });
+    const period = popover.createDiv({ cls: "anchor-period-column" });
     this.renderPeriodButton(period, kind, "AM", parts.period);
     this.renderPeriodButton(period, kind, "PM", parts.period);
   }
 
   private renderTimeColumn(parent: HTMLElement, kind: TimePickerKind, unit: "hour" | "minute", value: string | number) {
     const labelUnit = unit === "hour" ? "hour" : "minute";
-    const column = parent.createDiv({ cls: "home-base-time-column" });
+    const column = parent.createDiv({ cls: "anchor-time-column" });
     column.addEventListener("wheel", (event) => this.handleTimeColumnWheel(event, column, kind, unit), { passive: false });
-    const up = column.createEl("button", { cls: "home-base-time-step", attr: { "aria-label": `Decrease ${kind} ${labelUnit}` } });
+    const up = column.createEl("button", { cls: "anchor-time-step", attr: { "aria-label": `Decrease ${kind} ${labelUnit}` } });
     setIcon(up, "chevron-up");
     up.onClickEvent(() => this.adjustTime(kind, unit, -1));
-    column.createDiv({ cls: "home-base-time-value", text: String(value) });
-    const down = column.createEl("button", { cls: "home-base-time-step", attr: { "aria-label": `Increase ${kind} ${labelUnit}` } });
+    column.createDiv({ cls: "anchor-time-value", text: String(value) });
+    const down = column.createEl("button", { cls: "anchor-time-step", attr: { "aria-label": `Increase ${kind} ${labelUnit}` } });
     setIcon(down, "chevron-down");
     down.onClickEvent(() => this.adjustTime(kind, unit, 1));
   }
@@ -3798,7 +3325,7 @@ class CalendarEventModal extends Modal {
 
   private renderPeriodButton(parent: HTMLElement, kind: TimePickerKind, period: "AM" | "PM", selected: "AM" | "PM") {
     const button = parent.createEl("button", {
-      cls: `home-base-period-button${period === selected ? " is-selected" : ""}`,
+      cls: `anchor-period-button${period === selected ? " is-selected" : ""}`,
       text: period,
       attr: {
         "aria-label": `Set ${kind} time to ${period}`,
@@ -3812,7 +3339,7 @@ class CalendarEventModal extends Modal {
     if (!this.timePickerPopover || !this.activeTimeField || !this.activeTimeInput) return;
     const popover = this.timePickerPopover;
     popover.style.left = "0px";
-    popover.style.removeProperty("--home-base-time-pointer-left");
+    popover.style.removeProperty("--anchor-time-pointer-left");
     popover.removeClass("is-above");
 
     const fieldRect = this.activeTimeField.getBoundingClientRect();
@@ -3830,7 +3357,7 @@ class CalendarEventModal extends Modal {
     popover.style.left = `${desiredLeft}px`;
 
     const pointerLeft = inputRect.left + Math.min(32, inputRect.width / 2) - fieldRect.left - desiredLeft;
-    popover.style.setProperty("--home-base-time-pointer-left", `${Math.max(16, Math.min(popoverRect.width - 22, pointerLeft))}px`);
+    popover.style.setProperty("--anchor-time-pointer-left", `${Math.max(16, Math.min(popoverRect.width - 22, pointerLeft))}px`);
 
     const nextRect = popover.getBoundingClientRect();
     if (nextRect.bottom > window.innerHeight - margin && inputRect.top - nextRect.height - margin > 0) {
@@ -3987,11 +3514,11 @@ class CalendarEventModal extends Modal {
 }
 
 class WorkoutRoutineModal extends Modal {
-  private plugin: HomeBasePlugin;
+  private plugin: AnchorPlugin;
   private plan: WorkoutPlan;
   private onSave: () => void;
 
-  constructor(app: App, plugin: HomeBasePlugin, plan: WorkoutPlan, onSave: () => void) {
+  constructor(app: App, plugin: AnchorPlugin, plan: WorkoutPlan, onSave: () => void) {
     super(app);
     this.plugin = plugin;
     this.plan = {
@@ -4010,11 +3537,11 @@ class WorkoutRoutineModal extends Modal {
   private render() {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.addClass("home-base-modal", "home-base-routine-modal");
+    contentEl.addClass("anchor-modal", "anchor-routine-modal");
     contentEl.createEl("h2", { text: "Edit Workout Routine" });
 
-    const typesSection = contentEl.createDiv({ cls: "home-base-routine-section" });
-    const typesHeader = typesSection.createDiv({ cls: "home-base-routine-section-header" });
+    const typesSection = contentEl.createDiv({ cls: "anchor-routine-section" });
+    const typesHeader = typesSection.createDiv({ cls: "anchor-routine-section-header" });
     typesHeader.createEl("h3", { text: "Workout Types" });
     const addType = typesHeader.createEl("button", { text: "+ Add Type" });
     addType.onClickEvent(() => {
@@ -4027,7 +3554,7 @@ class WorkoutRoutineModal extends Modal {
     const typeNames = Object.keys(this.plan.types);
     if (!typeNames.length) {
       typesSection.createEl("p", {
-        cls: "home-base-muted home-base-italic",
+        cls: "anchor-muted anchor-italic",
         text: "Create a workout type to start your sequence."
       });
     }
@@ -4036,8 +3563,8 @@ class WorkoutRoutineModal extends Modal {
       this.renderWorkoutType(typesSection, name);
     }
 
-    const sequenceSection = contentEl.createDiv({ cls: "home-base-routine-section" });
-    const sequenceHeader = sequenceSection.createDiv({ cls: "home-base-routine-section-header" });
+    const sequenceSection = contentEl.createDiv({ cls: "anchor-routine-section" });
+    const sequenceHeader = sequenceSection.createDiv({ cls: "anchor-routine-section-header" });
     sequenceHeader.createEl("h3", { text: "Sequence Order" });
     const addSequence = sequenceHeader.createEl("button", { text: "+ Add Step" });
     addSequence.disabled = !typeNames.length;
@@ -4050,7 +3577,7 @@ class WorkoutRoutineModal extends Modal {
 
     if (!this.plan.sequence.length) {
       sequenceSection.createEl("p", {
-        cls: "home-base-muted home-base-italic",
+        cls: "anchor-muted anchor-italic",
         text: "No sequence steps yet."
       });
     }
@@ -4059,7 +3586,7 @@ class WorkoutRoutineModal extends Modal {
       this.renderSequenceStep(sequenceSection, workout, index);
     });
 
-    const footer = contentEl.createDiv({ cls: "home-base-modal-footer" });
+    const footer = contentEl.createDiv({ cls: "anchor-modal-footer" });
     const cancel = footer.createEl("button", { text: "Cancel" });
     cancel.onClickEvent(() => this.close());
     const save = footer.createEl("button", { cls: "mod-cta", text: "Save Routine" });
@@ -4067,10 +3594,10 @@ class WorkoutRoutineModal extends Modal {
   }
 
   private renderWorkoutType(parent: HTMLElement, name: string) {
-    const card = parent.createDiv({ cls: "home-base-routine-card" });
-    const row = card.createDiv({ cls: "home-base-routine-card-row" });
+    const card = parent.createDiv({ cls: "anchor-routine-card" });
+    const row = card.createDiv({ cls: "anchor-routine-card-row" });
 
-    const nameInput = row.createEl("input", { cls: "home-base-routine-name" });
+    const nameInput = row.createEl("input", { cls: "anchor-routine-name" });
     nameInput.type = "text";
     nameInput.value = name;
     nameInput.placeholder = "Workout name";
@@ -4085,7 +3612,7 @@ class WorkoutRoutineModal extends Modal {
       this.render();
     });
 
-    const exercises = card.createEl("textarea", { cls: "home-base-routine-exercises" });
+    const exercises = card.createEl("textarea", { cls: "anchor-routine-exercises" });
     exercises.placeholder = "One exercise per line";
     exercises.value = this.plan.types[name].join("\n");
     exercises.onchange = () => {
@@ -4097,8 +3624,8 @@ class WorkoutRoutineModal extends Modal {
   }
 
   private renderSequenceStep(parent: HTMLElement, workout: string, index: number) {
-    const row = parent.createDiv({ cls: "home-base-sequence-row" });
-    row.createEl("span", { cls: "home-base-sequence-index", text: `${index + 1}` });
+    const row = parent.createDiv({ cls: "anchor-sequence-row" });
+    row.createEl("span", { cls: "anchor-sequence-index", text: `${index + 1}` });
 
     const select = row.createEl("select");
     for (const typeName of Object.keys(this.plan.types)) {
@@ -4199,10 +3726,10 @@ class WorkoutRoutineModal extends Modal {
   }
 }
 
-class HomeBaseSettingTab extends PluginSettingTab {
-  plugin: HomeBasePlugin;
+class AnchorSettingTab extends PluginSettingTab {
+  plugin: AnchorPlugin;
 
-  constructor(app: App, plugin: HomeBasePlugin) {
+  constructor(app: App, plugin: AnchorPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -4210,11 +3737,11 @@ class HomeBaseSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Home Base Settings" });
+    containerEl.createEl("h2", { text: "Anchor Settings" });
 
     new Setting(containerEl)
       .setName("Open on startup")
-      .setDesc("Automatically open the Home Base dashboard when Obsidian starts.")
+      .setDesc("Automatically open the Anchor dashboard when Obsidian starts.")
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.openOnStartup)
@@ -4228,7 +3755,7 @@ class HomeBaseSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Enable calendar")
-      .setDesc("Show connected iCloud/CalDAV and Google calendars in Home Base.")
+      .setDesc("Show connected iCloud/CalDAV calendars in Anchor.")
       .addToggle((toggle) => {
         toggle
           .setValue(this.plugin.settings.calendarEnabled)
@@ -4294,61 +3821,19 @@ class HomeBaseSettingTab extends PluginSettingTab {
         });
       });
 
-    containerEl.createEl("h4", { text: "Google Calendar accounts" });
-    new Setting(containerEl)
-      .setName("Google OAuth client secret")
-      .setDesc("Stored only in Obsidian SecretStorage. Set or replace it when Google reports that client_secret is missing or invalid.")
-      .addButton((button) => {
-        button.setButtonText("Set / Replace");
-        button.onClick(async () => {
-          if (await this.plugin.replaceGoogleClientSecret()) new Notice("Google OAuth client secret saved locally.");
-        });
-      });
-    new Setting(containerEl)
-      .setName("Connect Google account")
-      .setDesc(Platform.isDesktopApp ? "Opens Google in your browser using secure OAuth 2.0 + PKCE." : "Connect accounts from Obsidian desktop, then sync this vault to mobile.")
-      .addButton((button) => {
-        button.setButtonText("Connect").setDisabled(!Platform.isDesktopApp);
-        button.onClick(async () => {
-          try {
-            const account = await this.plugin.connectGoogleAccount();
-            new Notice(`Connected ${account.email}.`);
-            this.display();
-            await this.plugin.refreshDashboard();
-          } catch (error) {
-            new Notice(error instanceof Error ? error.message : "Google Calendar connection failed.");
-          }
-        });
-      });
-
-    for (const account of this.plugin.settings.googleAccounts) {
-      new Setting(containerEl)
-        .setName(account.email)
-        .setDesc("Google Calendar · Encrypted refresh token")
-        .addButton((button) => {
-          button.setButtonText("Disconnect").setWarning();
-          button.onClick(async () => {
-            await this.plugin.disconnectGoogleAccount(account.id);
-            this.display();
-            await this.plugin.refreshDashboard();
-          });
-        });
-    }
-
-    const supportedCalendars = this.plugin.settings.calendarSources.filter((source) => source.provider === "icloud" || source.provider === "google");
+    const supportedCalendars = this.plugin.settings.calendarSources;
     if (supportedCalendars.length) {
       containerEl.createEl("h4", { text: "Visible calendars" });
       for (const calendar of supportedCalendars) {
-        const providerLabel = calendar.provider === "icloud" ? "iCloud" : "Google";
         const setting = new Setting(containerEl)
           .setName(calendar.displayName)
-          .setDesc(`${providerLabel} · ${calendar.accountName || providerLabel}${calendar.writable ? " · Writable" : " · Read only"}`)
+          .setDesc(`iCloud · ${calendar.accountName || "iCloud"}${calendar.writable ? " · Writable" : " · Read only"}`)
           .addToggle((toggle) => {
             toggle.setValue(calendar.enabled).onChange(async (value) => {
               await this.plugin.setCalendarEnabled(calendar.id, value);
             });
           });
-        const swatch = setting.nameEl.createSpan({ cls: "home-base-calendar-source-dot" });
+        const swatch = setting.nameEl.createSpan({ cls: "anchor-calendar-source-dot" });
         swatch.style.backgroundColor = calendar.color;
       }
 
@@ -4357,8 +3842,7 @@ class HomeBaseSettingTab extends PluginSettingTab {
         .setDesc("New events are saved here unless another calendar is selected in the event form.")
         .addDropdown((dropdown) => {
           for (const calendar of supportedCalendars.filter((source) => source.writable)) {
-            const providerLabel = calendar.provider === "icloud" ? "iCloud" : "Google";
-            dropdown.addOption(calendar.id, `${calendar.displayName} — ${providerLabel}`);
+            dropdown.addOption(calendar.id, `${calendar.displayName} — iCloud`);
           }
           dropdown.setValue(this.plugin.settings.defaultCalendarId);
           dropdown.onChange(async (value) => {
